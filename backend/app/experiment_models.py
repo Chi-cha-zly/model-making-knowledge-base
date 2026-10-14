@@ -1,7 +1,9 @@
 """Independent V4 job history and frozen experiment inputs."""
+
 from sqlalchemy import Integer, JSON, String
 from sqlalchemy.orm import Mapped, mapped_column
 from .models import Base
+
 
 class ExperimentJob(Base):
     __tablename__ = 'experiment_jobs'

@@ -1,4 +1,5 @@
 """Explicit image interpretation with short, atomic compare-and-publish transactions."""
+
 import asyncio
 import hashlib
 import inspect
@@ -20,27 +21,57 @@ MAX_LINKED_RECORDS = 1000
 
 def _snapshot(db, attachment_id):
     """Version and active source identity for every visible owner of this image."""
-    rows = db.execute(select(Document.id, Document.active_version, Document.kind,
-        Document.record_id, DocumentSource.source_id).join(Chunk, Chunk.document_id == Document.id)
-        .join(DocumentSource, (DocumentSource.document_id == Document.id) &
-              (DocumentSource.version == Document.active_version))
+    rows = db.execute(
+        select(
+            Document.id,
+            Document.active_version,
+            Document.kind,
+            Document.record_id,
+            DocumentSource.source_id,
+        )
+        .join(Chunk, Chunk.document_id == Document.id)
+        .join(
+            DocumentSource,
+            (DocumentSource.document_id == Document.id)
+            & (DocumentSource.version == Document.active_version),
+        )
         .join(Source, Source.id == DocumentSource.source_id)
-        .where(Chunk.attachment_id == attachment_id, Chunk.version == Document.active_version,
-               Source.owner_id == 'local', Source.status == 'published', _visible())
-        .distinct().order_by(Document.id, DocumentSource.source_id).limit(MAX_LINKED_RECORDS + 1)).all()
+        .where(
+            Chunk.attachment_id == attachment_id,
+            Chunk.version == Document.active_version,
+            Source.owner_id == 'local',
+            Source.status == 'published',
+            _visible(),
+        )
+        .distinct()
+        .order_by(Document.id, DocumentSource.source_id)
+        .limit(MAX_LINKED_RECORDS + 1)
+    ).all()
     return [tuple(row) for row in rows]
 
 
 def _plan(engine, model, limit):
     with Session(engine) as db:
-        ids = db.scalars(select(Attachment.id).join(Chunk, Chunk.attachment_id == Attachment.id)
+        ids = db.scalars(
+            select(Attachment.id)
+            .join(Chunk, Chunk.attachment_id == Attachment.id)
             .join(Document, Document.id == Chunk.document_id)
             .outerjoin(ImageAnalysis, ImageAnalysis.attachment_id == Attachment.id)
-            .where(Chunk.version == Document.active_version, _visible(),
-                   Attachment.owner_id == 'local', Attachment.status == 'published',
-                   or_(ImageAnalysis.attachment_id.is_(None), ImageAnalysis.image_hash != Attachment.sha256,
-                       ImageAnalysis.model != model))
-            .distinct().order_by(Attachment.id).limit(limit)).all()
+            .where(
+                Chunk.version == Document.active_version,
+                _visible(),
+                Attachment.owner_id == 'local',
+                Attachment.status == 'published',
+                or_(
+                    ImageAnalysis.attachment_id.is_(None),
+                    ImageAnalysis.image_hash != Attachment.sha256,
+                    ImageAnalysis.model != model,
+                ),
+            )
+            .distinct()
+            .order_by(Attachment.id)
+            .limit(limit)
+        ).all()
     return ids
 
 
@@ -51,7 +82,11 @@ def _read_image(storage, attachment):
         raise ValueError('Unsafe image path')
     with path.open('rb') as file:
         raw = file.read(MAX_IMAGE_BYTES + 1)
-    if not 0 < len(raw) <= MAX_IMAGE_BYTES or len(raw) != size or hashlib.sha256(raw).hexdigest() != image_hash:
+    if (
+        not 0 < len(raw) <= MAX_IMAGE_BYTES
+        or len(raw) != size
+        or hashlib.sha256(raw).hexdigest() != image_hash
+    ):
         raise ValueError('Image changed or exceeds size limit')
     if content_type not in ('image/png', 'image/jpeg', 'image/gif', 'image/webp'):
         raise ValueError('Unsupported image type')
@@ -65,22 +100,47 @@ def _attachment_identity(row):
 def _still_current(engine, attachment_id, identity, snapshot):
     with Session(engine) as db:
         row = db.get(Attachment, attachment_id)
-        return bool(row is not None and row.owner_id == 'local' and row.status == 'published'
-                    and _attachment_identity(row) == identity and _snapshot(db, attachment_id) == snapshot)
+        return bool(
+            row is not None
+            and row.owner_id == 'local'
+            and row.status == 'published'
+            and _attachment_identity(row) == identity
+            and _snapshot(db, attachment_id) == snapshot
+        )
 
 
 def _publish(engine, storage, attachment_id, identity, snapshot, model, ocr_text, description):
     with Session(engine) as db, db.begin():
-        attachment = db.scalar(select(Attachment).where(Attachment.id == attachment_id).with_for_update())
-        if (attachment is None or attachment.owner_id != 'local' or attachment.status != 'published'
-                or _attachment_identity(attachment) != identity):
+        attachment = db.scalar(
+            select(Attachment).where(Attachment.id == attachment_id).with_for_update()
+        )
+        if (
+            attachment is None
+            or attachment.owner_id != 'local'
+            or attachment.status != 'published'
+            or _attachment_identity(attachment) != identity
+        ):
             return 'stale'
         # Lock provenance and versions before the final comparison. A withdrawal or
         # concurrent reindex must finish before this check or wait for publication.
         source_ids = sorted({row[4] for row in snapshot})
         document_ids = sorted({row[0] for row in snapshot})
-        list(db.scalars(select(Source).where(Source.id.in_(source_ids)).order_by(Source.id).with_for_update()))
-        list(db.scalars(select(Document).where(Document.id.in_(document_ids)).order_by(Document.id).with_for_update()))
+        list(
+            db.scalars(
+                select(Source)
+                .where(Source.id.in_(source_ids))
+                .order_by(Source.id)
+                .with_for_update()
+            )
+        )
+        list(
+            db.scalars(
+                select(Document)
+                .where(Document.id.in_(document_ids))
+                .order_by(Document.id)
+                .with_for_update()
+            )
+        )
         if _snapshot(db, attachment_id) != snapshot:
             return 'stale'
         try:
@@ -106,7 +166,9 @@ def _publish(engine, storage, attachment_id, identity, snapshot, model, ocr_text
         return 'ready'
 
 
-async def describe_pending(engine, provider, storage, *, apply=False, max_documents=20, ocr=None, progress=None):
+async def describe_pending(
+    engine, provider, storage, *, apply=False, max_documents=20, ocr=None, progress=None
+):
     """Plan by default; each bounded result is one image shared by zero or more documents."""
     if type(max_documents) is not int or not 1 <= max_documents <= 100:
         raise ValueError('max_documents must be between 1 and 100')
@@ -114,16 +176,23 @@ async def describe_pending(engine, provider, storage, *, apply=False, max_docume
     model = getattr(provider, 'vision_model', None)
     configured = bool(getattr(provider, 'vision_configured', False) and model)
     targets = _plan(engine, model, max_documents)
-    result = {'status': ('completed' if apply else 'dry_run') if configured else 'unconfigured',
-              'dry_run': not apply, 'configured': configured, 'documents': []}
+    result = {
+        'status': ('completed' if apply else 'dry_run') if configured else 'unconfigured',
+        'dry_run': not apply,
+        'configured': configured,
+        'documents': [],
+    }
     recognizer = ocr or local_ocr()
     for index, attachment_id in enumerate(targets):
         with Session(engine) as db:
             attachment = db.get(Attachment, attachment_id)
             snapshot = _snapshot(db, attachment_id)
             identity = _attachment_identity(attachment) if attachment is not None else None
-        item = {'attachment_id': attachment_id, 'document_ids': sorted({row[0] for row in snapshot}),
-                'status': 'planned'}
+        item = {
+            'attachment_id': attachment_id,
+            'document_ids': sorted({row[0] for row in snapshot}),
+            'status': 'planned',
+        }
         result['documents'].append(item)
         if not identity or not snapshot:
             item['status'] = 'stale'
@@ -144,15 +213,27 @@ async def describe_pending(engine, provider, storage, *, apply=False, max_docume
                     item['status'] = 'stale'
                 else:
                     _read_image(storage, identity)
-                    description = ImageDescription.model_validate(await provider.describe_image(image, identity[3])).model_dump()
+                    description = ImageDescription.model_validate(
+                        await provider.describe_image(image, identity[3])
+                    ).model_dump()
                     await asyncio.sleep(0)
                     if getattr(provider, 'vision_model', None) != model:
                         item['status'] = 'stale'
                     else:
-                        item['status'] = _publish(engine, storage, attachment_id, identity, snapshot,
-                                                  model, ocr_text, description)
+                        item['status'] = _publish(
+                            engine,
+                            storage,
+                            attachment_id,
+                            identity,
+                            snapshot,
+                            model,
+                            ocr_text,
+                            description,
+                        )
             except Exception:
-                item.update(status='failed', error='图片任务失败；未发布部分结果，已有资料和索引保持不变。')
+                item.update(
+                    status='failed', error='图片任务失败；未发布部分结果，已有资料和索引保持不变。'
+                )
                 result['status'] = 'partial_failure'
         if progress is not None:
             pending = progress(index + 1, len(targets))

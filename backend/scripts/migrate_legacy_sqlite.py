@@ -3,6 +3,7 @@
 Run Alembic against a new PostgreSQL database first. This command never changes
 .env, the SQLite database, or its attachments. Review the dry run before --apply.
 """
+
 import argparse
 import hashlib
 import json
@@ -10,12 +11,14 @@ from pathlib import Path
 import shutil
 from tempfile import TemporaryDirectory
 from sqlalchemy import MetaData, create_engine, select, text
-from pgvector.sqlalchemy import Vector  # registers PostgreSQL reflection
+from pgvector.sqlalchemy import Vector as Vector  # registers PostgreSQL reflection
 from app.content import legacy_steps_to_blocks
 from app.db import create_db_engine, init_db
 
 
-def copy_legacy_database(source_path, source_attachments, target_url, target_attachments, *, apply=False):
+def copy_legacy_database(
+    source_path, source_attachments, target_url, target_attachments, *, apply=False
+):
     source_path = Path(source_path).resolve(strict=True)
     source_attachments = Path(source_attachments).resolve(strict=True)
     target_attachments = Path(target_attachments).resolve()
@@ -36,7 +39,7 @@ def copy_legacy_database(source_path, source_attachments, target_url, target_att
     placed = []
     try:
         with source.connect() as conn:
-            conn.exec_driver_sql("BEGIN")
+            conn.exec_driver_sql('BEGIN')
             for name, table in source_meta.tables.items():
                 if name != 'alembic_version':
                     records[name] = [dict(row) for row in conn.execute(select(table)).mappings()]
@@ -48,21 +51,31 @@ def copy_legacy_database(source_path, source_attachments, target_url, target_att
             path = (source_attachments / name).resolve(strict=True)
             if path.parent != source_attachments:
                 raise ValueError('Unsafe attachment path')
-            if path.stat().st_size != attachment['size'] or hashlib.sha256(path.read_bytes()).hexdigest() != attachment['sha256']:
+            if (
+                path.stat().st_size != attachment['size']
+                or hashlib.sha256(path.read_bytes()).hexdigest() != attachment['sha256']
+            ):
                 raise ValueError('Attachment checksum mismatch')
             files.append(path)
         attachment_hashes = {a['id']: a['sha256'] for a in records.get('attachments', [])}
         for chunk in records.get('chunks', []):
             if chunk.get('attachment_id') in attachment_hashes:
-                chunk['payload'] = {**chunk['payload'], 'attachment_hash': attachment_hashes[chunk['attachment_id']]}
+                chunk['payload'] = {
+                    **chunk['payload'],
+                    'attachment_hash': attachment_hashes[chunk['attachment_id']],
+                }
         for row in records.get('techniques', []):
             if not row.get('content_blocks'):
                 row['content_blocks'] = legacy_steps_to_blocks(row.get('steps', []))
             row.pop('steps', None)
-        report = {'status': 'dry_run', 'source': str(source_path),
-                  'target': target.url.render_as_string(hide_password=True),
-                  'attachment_target': str(target_attachments),
-                  'tables': {name: len(rows) for name, rows in records.items()}, 'attachments': len(files)}
+        report = {
+            'status': 'dry_run',
+            'source': str(source_path),
+            'target': target.url.render_as_string(hide_password=True),
+            'attachment_target': str(target_attachments),
+            'tables': {name: len(rows) for name, rows in records.items()},
+            'attachments': len(files),
+        }
         with target.begin() as conn:
             tables = [t for t in target_meta.sorted_tables if t.name != 'alembic_version']
             for table in tables:
@@ -71,24 +84,46 @@ def copy_legacy_database(source_path, source_attachments, target_url, target_att
             if not apply:
                 return report
             target_attachments.parent.mkdir(parents=True, exist_ok=True)
-            with TemporaryDirectory(dir=target_attachments.parent, prefix='legacy-stage-') as staging:
+            with TemporaryDirectory(
+                dir=target_attachments.parent, prefix='legacy-stage-'
+            ) as staging:
                 for path in files:
                     staged = Path(staging) / path.name
                     shutil.copy2(path, staged)
-                    expected = next(a for a in records['attachments'] if a['storage_name'] == path.name)
-                    if staged.stat().st_size != expected['size'] or hashlib.sha256(staged.read_bytes()).hexdigest() != expected['sha256']:
+                    expected = next(
+                        a for a in records['attachments'] if a['storage_name'] == path.name
+                    )
+                    if (
+                        staged.stat().st_size != expected['size']
+                        or hashlib.sha256(staged.read_bytes()).hexdigest() != expected['sha256']
+                    ):
                         raise ValueError('Attachment changed during copy')
                 for table in tables:
                     rows = records.get(table.name, [])
                     if rows:
                         columns = set(table.c.keys())
-                        conn.execute(table.insert(), [{key: value for key, value in row.items() if key in columns} for row in rows])
+                        conn.execute(
+                            table.insert(),
+                            [
+                                {key: value for key, value in row.items() if key in columns}
+                                for row in rows
+                            ],
+                        )
                 for table in tables:
                     if 'id' in table.c and table.c.id.type.python_type is int:
-                        sequence = conn.scalar(text('SELECT pg_get_serial_sequence(:table, :column)'), {'table': table.name, 'column': 'id'})
+                        sequence = conn.scalar(
+                            text('SELECT pg_get_serial_sequence(:table, :column)'),
+                            {'table': table.name, 'column': 'id'},
+                        )
                         if sequence:
-                            maximum = conn.scalar(select(__import__('sqlalchemy').func.max(table.c.id)))
-                            conn.execute(text(f'ALTER SEQUENCE {sequence} RESTART WITH {int(maximum or 0) + 1}'))
+                            maximum = conn.scalar(
+                                select(__import__('sqlalchemy').func.max(table.c.id))
+                            )
+                            conn.execute(
+                                text(
+                                    f'ALTER SEQUENCE {sequence} RESTART WITH {int(maximum or 0) + 1}'
+                                )
+                            )
                 target_attachments.mkdir(parents=True, exist_ok=True)
                 for path in files:
                     destination = target_attachments / path.name
@@ -114,8 +149,13 @@ def main():
     parser.add_argument('--apply', action='store_true')
     parser.add_argument('--report', type=Path, required=True)
     args = parser.parse_args()
-    report = copy_legacy_database(args.source_sqlite, args.source_attachments, args.database_url,
-                                  args.target_attachments, apply=args.apply)
+    report = copy_legacy_database(
+        args.source_sqlite,
+        args.source_attachments,
+        args.database_url,
+        args.target_attachments,
+        apply=args.apply,
+    )
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2))
     print(json.dumps(report, ensure_ascii=False))

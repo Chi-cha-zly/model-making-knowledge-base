@@ -1,4 +1,5 @@
 """Bounded backup upload/download transport and active-generation guard."""
+
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -15,12 +16,18 @@ router = APIRouter(prefix='/api/v1/backup')
 @router.get('')
 def export_backup(service: BackupService = Depends(get_backups)):
     path = service.export_backup()
-    return FileResponse(path, media_type='application/zip', filename='knowledge-backup.zip',
-                        background=BackgroundTask(path.unlink, missing_ok=True))
+    return FileResponse(
+        path,
+        media_type='application/zip',
+        filename='knowledge-backup.zip',
+        background=BackgroundTask(path.unlink, missing_ok=True),
+    )
 
 
 @router.post('')
-async def restore_backup(request: Request, file: UploadFile = File(...), service: BackupService = Depends(get_backups)):
+async def restore_backup(
+    request: Request, file: UploadFile = File(...), service: BackupService = Depends(get_backups)
+):
     state = request.app.state
     async with state.chat.lock:
         if state.chat.has_active() or state.experiments.has_active():

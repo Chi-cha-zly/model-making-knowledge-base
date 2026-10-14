@@ -1,4 +1,5 @@
 """Translate application errors to the public HTTP error shape."""
+
 from fastapi.responses import JSONResponse
 from ..services.errors import ServiceError
 

@@ -1,4 +1,5 @@
 """PostgreSQL runtime policy. Schema changes are always explicit Alembic work."""
+
 from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
@@ -23,4 +24,6 @@ def init_db(engine):
     with engine.connect() as connection:
         actual = set(MigrationContext.configure(connection).get_current_heads())
     if actual != expected:
-        raise RuntimeError('Database schema is not current; run alembic upgrade head before starting')
+        raise RuntimeError(
+            'Database schema is not current; run alembic upgrade head before starting'
+        )

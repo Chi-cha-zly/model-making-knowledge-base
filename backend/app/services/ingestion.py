@@ -1,4 +1,5 @@
 """Application operations for rebuilding and retrying the derived index."""
+
 from ..ingestion import backfill, ingest_record
 from .errors import ServiceError
 
@@ -8,9 +9,17 @@ class IngestionService:
         self.repository = repository
 
     def jobs(self):
-        return [{'id': row.id, 'document_id': row.document_id, 'version': row.version,
-                 'status': row.status, 'progress': row.progress, 'error': row.error}
-                for row in self.repository.recent_jobs()]
+        return [
+            {
+                'id': row.id,
+                'document_id': row.document_id,
+                'version': row.version,
+                'status': row.status,
+                'progress': row.progress,
+                'error': row.error,
+            }
+            for row in self.repository.recent_jobs()
+        ]
 
     def backfill(self):
         count = backfill(self.repository.session)
@@ -26,4 +35,8 @@ class IngestionService:
             raise ServiceError(404, 'Not found')
         document = ingest_record(self.repository.session, row, force=True)
         self.repository.session.commit()
-        return {'document_id': document.id, 'version': document.active_version, 'status': document.status}
+        return {
+            'document_id': document.id,
+            'version': document.active_version,
+            'status': document.status,
+        }

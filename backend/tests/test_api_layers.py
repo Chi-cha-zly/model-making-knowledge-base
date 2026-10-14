@@ -1,4 +1,5 @@
 """API dependency boundaries must not retain a closed-over database or storage."""
+
 from pg_test_support import test_database_url
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -9,8 +10,8 @@ from app.models import Source
 
 
 def test_catalog_routes_resolve_database_from_app_state(tmp_path):
-    app = create_app(test_database_url(f"{tmp_path / 'original.db'}"), tmp_path / 'uploads')
-    replacement = create_engine(test_database_url(f"{tmp_path / 'replacement.db'}"))
+    app = create_app(test_database_url(f'{tmp_path / "original.db"}'), tmp_path / 'uploads')
+    replacement = create_engine(test_database_url(f'{tmp_path / "replacement.db"}'))
     with Session(replacement) as db:
         db.add(Source(title='Replacement database', source_type='manual'))
         db.commit()
@@ -30,11 +31,13 @@ def test_attachment_routes_resolve_storage_from_app_state(tmp_path):
     original = tmp_path / 'original'
     replacement = tmp_path / 'replacement'
     replacement.mkdir()
-    app = create_app(test_database_url(f"{tmp_path / 'test.db'}"), original)
+    app = create_app(test_database_url(f'{tmp_path / "test.db"}'), original)
     raw = b'\x89PNG\r\n\x1a\n' + b'fixture'
     with TestClient(app) as client:
         app.state.storage = replacement
-        response = client.post('/api/v1/attachments', files={'file': ('photo.png', raw, 'image/png')})
+        response = client.post(
+            '/api/v1/attachments', files={'file': ('photo.png', raw, 'image/png')}
+        )
         assert response.status_code == 201
         assert len(list(replacement.glob('*.png'))) == 1
         assert list(original.glob('*.png')) == []

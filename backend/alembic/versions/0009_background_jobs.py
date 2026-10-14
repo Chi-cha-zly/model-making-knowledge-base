@@ -1,4 +1,5 @@
 """Shared background job lifecycle."""
+
 from alembic import op
 import sqlalchemy as sa
 
@@ -9,7 +10,8 @@ depends_on = None
 
 
 def upgrade():
-    op.create_table('jobs',
+    op.create_table(
+        'jobs',
         sa.Column('id', sa.Integer(), primary_key=True),
         sa.Column('kind', sa.String(40), nullable=False),
         sa.Column('request_id', sa.String(128), nullable=False),
@@ -21,7 +23,8 @@ def upgrade():
         sa.Column('error', sa.Text(), nullable=True),
         sa.Column('created_at', sa.DateTime(), nullable=False),
         sa.Column('updated_at', sa.DateTime(), nullable=False),
-        sa.UniqueConstraint('kind', 'request_id'))
+        sa.UniqueConstraint('kind', 'request_id'),
+    )
     op.create_index('ix_jobs_status', 'jobs', ['status'])
 
 

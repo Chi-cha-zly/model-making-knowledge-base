@@ -1,4 +1,5 @@
 """HTTP operations for catalog ingestion."""
+
 from fastapi import APIRouter, Depends
 from ..services.ingestion import IngestionService
 from .dependencies import get_ingestion

@@ -1,4 +1,5 @@
 """Image interpretation is derived evidence, separate from authored knowledge."""
+
 from datetime import datetime
 from typing import Annotated
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
@@ -23,7 +24,9 @@ class ImageDescription(BaseModel):
 
 class ImageAnalysis(Base):
     __tablename__ = 'image_analyses'
-    attachment_id: Mapped[int] = mapped_column(ForeignKey('attachments.id', ondelete='CASCADE'), primary_key=True)
+    attachment_id: Mapped[int] = mapped_column(
+        ForeignKey('attachments.id', ondelete='CASCADE'), primary_key=True
+    )
     image_hash: Mapped[str] = mapped_column(String(64))
     model: Mapped[str] = mapped_column(String(200))
     ocr_text: Mapped[str] = mapped_column(Text)

@@ -1,7 +1,15 @@
 """HTTP catalog contract; business rules live in CatalogService."""
+
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 
-from ..schemas import ProductInput, ProductPatch, SourceInput, SourcePatch, TechniqueInput, TechniquePatch
+from ..schemas import (
+    ProductInput,
+    ProductPatch,
+    SourceInput,
+    SourcePatch,
+    TechniqueInput,
+    TechniquePatch,
+)
 from ..services.catalog import CatalogService
 from .dependencies import get_catalog
 
@@ -84,12 +92,18 @@ def withdraw_product(id: int, service: CatalogService = Depends(get_catalog)):
 
 
 @router.get('/search')
-def search(q: str = Query(min_length=1, max_length=2000), service: CatalogService = Depends(get_catalog)):
+def search(
+    q: str = Query(min_length=1, max_length=2000), service: CatalogService = Depends(get_catalog)
+):
     return service.search(q)
 
 
 @router.post('/imports/markdown', status_code=201)
-async def import_markdown(file: UploadFile = File(...), source_title: str | None = Form(None),
-                          source_url: str | None = Form(None), service: CatalogService = Depends(get_catalog)):
+async def import_markdown(
+    file: UploadFile = File(...),
+    source_title: str | None = Form(None),
+    source_url: str | None = Form(None),
+    service: CatalogService = Depends(get_catalog),
+):
     data = await file.read(1024 * 1024 + 1)
     return service.import_markdown(file.filename, data, source_title, source_url)

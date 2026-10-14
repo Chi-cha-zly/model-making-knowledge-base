@@ -1,4 +1,5 @@
 """Lazy system-vault boundary. Never falls back to plaintext or a null backend."""
+
 from typing import Protocol
 
 SERVICE = 'model-making-knowledge-base.credentials'
@@ -22,6 +23,7 @@ class SystemCredentials:
         if self._backend is None:
             try:
                 import keyring
+
                 backend = keyring.get_keyring()
                 kind = (type(backend).__module__, type(backend).__name__)
                 supported = {
@@ -33,7 +35,9 @@ class SystemCredentials:
                     raise ValueError()
                 self._backend = backend
             except Exception:
-                raise CredentialError('系统凭据库不可用；请启用原生 Keychain、Credential Locker 或 Secret Service。不会改用明文保存。') from None
+                raise CredentialError(
+                    '系统凭据库不可用；请启用原生 Keychain、Credential Locker 或 Secret Service。不会改用明文保存。'
+                ) from None
         return self._backend
 
     def get(self, reference):

@@ -1,4 +1,5 @@
 """Persistent lifecycle shared by all explicit background work."""
+
 from sqlalchemy import JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from .models import Base, now

@@ -1,4 +1,5 @@
 """Validate and persist image uploads with filesystem/database compensation."""
+
 import hashlib
 import uuid
 from pathlib import Path
@@ -8,8 +9,12 @@ from .errors import ServiceError
 from .serializers import _attachment_out
 
 MAX_IMAGE = 5 * 1024 * 1024
-IMAGE_TYPES = {'image/png': (b'\x89PNG\r\n\x1a\n', '.png'), 'image/jpeg': (b'\xff\xd8\xff', '.jpg'),
-               'image/gif': (b'GIF8', '.gif'), 'image/webp': (b'RIFF', '.webp')}
+IMAGE_TYPES = {
+    'image/png': (b'\x89PNG\r\n\x1a\n', '.png'),
+    'image/jpeg': (b'\xff\xd8\xff', '.jpg'),
+    'image/gif': (b'GIF8', '.gif'),
+    'image/webp': (b'RIFF', '.webp'),
+}
 
 
 class AttachmentService:
@@ -32,8 +37,13 @@ class AttachmentService:
         path = self.storage / storage_name
         path.write_bytes(raw)
         try:
-            row = Attachment(filename=name, content_type=content_type, storage_name=storage_name,
-                             sha256=hashlib.sha256(raw).hexdigest(), size=len(raw))
+            row = Attachment(
+                filename=name,
+                content_type=content_type,
+                storage_name=storage_name,
+                sha256=hashlib.sha256(raw).hexdigest(),
+                size=len(raw),
+            )
             self.repository.add(row)
             self.repository.commit()
             return _attachment_out(row)

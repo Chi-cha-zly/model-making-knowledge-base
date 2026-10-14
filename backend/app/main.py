@@ -1,4 +1,5 @@
 """Application factory: dependencies, lifecycle, and router assembly only."""
+
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -17,9 +18,17 @@ from .services.runtime import application_lifespan, build_runtime
 from .user_settings import install_settings
 
 
-def create_app(database_url: str | None = None, storage_dir: str | Path | None = None,
-               provider=None, settings_path=None, runtime_settings=None, credential_store=None) -> FastAPI:
-    runtime = build_runtime(database_url, storage_dir, provider, settings_path, runtime_settings, credential_store)
+def create_app(
+    database_url: str | None = None,
+    storage_dir: str | Path | None = None,
+    provider=None,
+    settings_path=None,
+    runtime_settings=None,
+    credential_store=None,
+) -> FastAPI:
+    runtime = build_runtime(
+        database_url, storage_dir, provider, settings_path, runtime_settings, credential_store
+    )
     app = FastAPI(title='模型制作知识库 API', version='0.4.0', lifespan=application_lifespan)
     app.state.configure_saved_provider = provider is None
     app.state.jobs = runtime.jobs
@@ -27,7 +36,10 @@ def create_app(database_url: str | None = None, storage_dir: str | Path | None =
     app.state.storage = runtime.storage
     app.state.backup_limit = runtime.backup_limit
     app.add_exception_handler(ServiceError, service_error_response)
-    app.add_exception_handler(CredentialError, lambda request, error: JSONResponse(status_code=503, content={'detail': str(error)}))
+    app.add_exception_handler(
+        CredentialError,
+        lambda request, error: JSONResponse(status_code=503, content={'detail': str(error)}),
+    )
     install_settings(app, runtime.user_settings, runtime.chat, runtime.experiments)
     install_experiments(app, runtime.experiments)
     install_chat(app, runtime.chat)

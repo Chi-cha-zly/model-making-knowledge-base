@@ -1,13 +1,15 @@
-from pg_test_support import test_database_url
 """Ingestion must publish complete versions and retain usable evidence on failure."""
+
+from pg_test_support import test_database_url
 from sqlalchemy import create_engine, select, func
 from sqlalchemy.orm import Session
-from app.models import Base, Technique, Source
+from app.models import Technique, Source
 
 
 def test_ingestion_versions_idempotence_and_pending_embeddings(monkeypatch):
     from app import ingestion
     from app.ingestion_models import Document, Chunk, Embedding, IngestionJob
+
     engine = create_engine(test_database_url(''))
     with Session(engine) as db:
         row = Technique(title='打磨', summary='砂纸处理', sources=[Source(title='出处')])
@@ -25,8 +27,10 @@ def test_ingestion_versions_idempotence_and_pending_embeddings(monkeypatch):
         assert document.active_version == 2
         assert db.scalar(select(func.count()).select_from(Chunk).where(Chunk.version == 1)) > 0
         original = ingestion.chunk_record
+
         def fail(_):
             raise ValueError('upstream-private-detail')
+
         monkeypatch.setattr(ingestion, 'chunk_record', fail)
         row.summary = '失败版本'
         db.commit()
@@ -42,8 +46,15 @@ def test_ingestion_versions_idempotence_and_pending_embeddings(monkeypatch):
 
 def test_markdown_sections_keep_heading_boundaries():
     from app.ingestion import chunk_record
-    row = Technique(title='教程', summary='# NMM\n导读\n\n## 阴影\n紫色薄涂\n\n## 高光\n浅黄色描边',
-                    content_blocks=[], tags=[])
+
+    row = Technique(
+        title='教程',
+        summary='# NMM\n导读\n\n## 阴影\n紫色薄涂\n\n## 高光\n浅黄色描边',
+        content_blocks=[],
+        tags=[],
+    )
     parts = [part for part, _ in chunk_record(row)]
     assert any('## 阴影' in part and '紫色薄涂' in part and '## 高光' not in part for part in parts)
-    assert any('## 高光' in part and '浅黄色描边' in part and '## 阴影' not in part for part in parts)
+    assert any(
+        '## 高光' in part and '浅黄色描边' in part and '## 阴影' not in part for part in parts
+    )

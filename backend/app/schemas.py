@@ -1,25 +1,25 @@
 from typing import Literal
 from .content import ContentBlocks
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-Status = Literal["draft", "published", "withdrawn"]
-Visibility = Literal["private", "public"]
+Status = Literal['draft', 'published', 'withdrawn']
+Visibility = Literal['private', 'public']
 
 
 class SourceInput(BaseModel):
     title: str = Field(min_length=1, max_length=300)
     url: str | None = None
-    source_type: str = "link"
+    source_type: str = 'link'
     author: str | None = None
     license_note: str | None = None
-    visibility: Visibility = "private"
-    status: Status = "published"
+    visibility: Visibility = 'private'
+    status: Status = 'published'
 
 
 class SourcePatch(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra='forbid')
     title: str | None = Field(default=None, min_length=1, max_length=300)
     url: str | None = None
     source_type: str | None = None
@@ -30,7 +30,7 @@ class SourcePatch(BaseModel):
 
 
 class TechniqueInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra='forbid')
     title: str = Field(min_length=1, max_length=300)
     category: str | None = None
     summary: str | None = None
@@ -42,20 +42,20 @@ class TechniqueInput(BaseModel):
     original: bool = False
     source_ids: list[int] = Field(default_factory=list)
     attachment_ids: list[int] = Field(default_factory=list)
-    visibility: Visibility = "private"
-    status: Literal["draft", "published"] = "published"
+    visibility: Visibility = 'private'
+    status: Literal['draft', 'published'] = 'published'
 
-    @model_validator(mode="after")
+    @model_validator(mode='after')
     def validate_origin(self):
         if self.original and self.source_ids:
-            raise ValueError("Original techniques cannot also select existing sources")
+            raise ValueError('Original techniques cannot also select existing sources')
         if not self.original and not self.source_ids:
-            raise ValueError("Select a source or mark the technique as original")
+            raise ValueError('Select a source or mark the technique as original')
         return self
 
 
 class TechniquePatch(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra='forbid')
     title: str | None = Field(default=None, min_length=1, max_length=300)
     category: str | None = None
     summary: str | None = None
@@ -80,12 +80,12 @@ class ProductInput(BaseModel):
     attachment_ids: list[int] = Field(default_factory=list)
     properties: dict = Field(default_factory=dict)
     manufacturer_url: str | None = None
-    visibility: Visibility = "private"
-    status: Status = "published"
+    visibility: Visibility = 'private'
+    status: Status = 'published'
 
 
 class ProductPatch(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra='forbid')
     brand: str | None = None
     name: str | None = Field(default=None, min_length=1, max_length=300)
     sku: str | None = None

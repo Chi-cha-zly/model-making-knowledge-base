@@ -1,4 +1,3 @@
-import asyncio
 from sqlalchemy import event
 from fastapi.testclient import TestClient
 from test_chat import setup, conversation, start, wait

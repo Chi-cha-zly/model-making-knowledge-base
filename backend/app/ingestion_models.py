@@ -1,4 +1,5 @@
 """Versioned derived knowledge and a portable, indexed lexical posting list."""
+
 from sqlalchemy import ForeignKey, Integer, JSON, String, Text, UniqueConstraint, Index
 from sqlalchemy.orm import Mapped, mapped_column
 from .models import Base
@@ -20,12 +21,16 @@ class Chunk(Base):
     __tablename__ = 'chunks'
     __table_args__ = (UniqueConstraint('document_id', 'version', 'ordinal'),)
     id: Mapped[int] = mapped_column(primary_key=True)
-    document_id: Mapped[int] = mapped_column(ForeignKey('documents.id', ondelete='CASCADE'), index=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey('documents.id', ondelete='CASCADE'), index=True
+    )
     version: Mapped[int] = mapped_column(Integer)
     ordinal: Mapped[int] = mapped_column(Integer)
     kind: Mapped[str] = mapped_column(String(20), default='text')
     content: Mapped[str] = mapped_column(Text)
-    attachment_id: Mapped[int | None] = mapped_column(ForeignKey('attachments.id', ondelete='CASCADE'), nullable=True)
+    attachment_id: Mapped[int | None] = mapped_column(
+        ForeignKey('attachments.id', ondelete='CASCADE'), nullable=True
+    )
     payload: Mapped[dict] = mapped_column(JSON)
 
 
@@ -43,7 +48,9 @@ class Embedding(Base):
 class IngestionJob(Base):
     __tablename__ = 'ingestion_jobs'
     id: Mapped[int] = mapped_column(primary_key=True)
-    document_id: Mapped[int] = mapped_column(ForeignKey('documents.id', ondelete='CASCADE'), index=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey('documents.id', ondelete='CASCADE'), index=True
+    )
     version: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(20), default='running')
     progress: Mapped[int] = mapped_column(Integer, default=0)
@@ -53,13 +60,20 @@ class IngestionJob(Base):
 class Posting(Base):
     __tablename__ = 'chunk_postings'
     __table_args__ = (Index('ix_chunk_postings_term_chunk', 'term', 'chunk_id'),)
-    chunk_id: Mapped[int] = mapped_column(ForeignKey('chunks.id', ondelete='CASCADE'), primary_key=True)
+    chunk_id: Mapped[int] = mapped_column(
+        ForeignKey('chunks.id', ondelete='CASCADE'), primary_key=True
+    )
     term: Mapped[str] = mapped_column(String(200), primary_key=True)
 
 
 class DocumentSource(Base):
     """Provenance belongs to the activated version, not the latest mutable row."""
+
     __tablename__ = 'document_sources'
-    document_id: Mapped[int] = mapped_column(ForeignKey('documents.id', ondelete='CASCADE'), primary_key=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey('documents.id', ondelete='CASCADE'), primary_key=True
+    )
     version: Mapped[int] = mapped_column(Integer, primary_key=True)
-    source_id: Mapped[int] = mapped_column(ForeignKey('sources.id', ondelete='RESTRICT'), primary_key=True)
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey('sources.id', ondelete='RESTRICT'), primary_key=True
+    )

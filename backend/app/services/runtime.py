@@ -1,4 +1,5 @@
 """Runtime composition and lifecycle, separate from HTTP endpoint definitions."""
+
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,7 +29,14 @@ class Runtime:
     jobs: JobService
 
 
-def build_runtime(database_url=None, storage_dir=None, provider=None, settings_path=None, runtime_settings=None, credential_store=None):
+def build_runtime(
+    database_url=None,
+    storage_dir=None,
+    provider=None,
+    settings_path=None,
+    runtime_settings=None,
+    credential_store=None,
+):
     config = read_settings()
     root = Path(__file__).resolve().parents[3]
     storage = Path(storage_dir or config.get('DATA_DIR') or root / 'data' / 'attachments')
@@ -39,17 +47,39 @@ def build_runtime(database_url=None, storage_dir=None, provider=None, settings_p
     backup_limit = int(config.get('BACKUP_MAX_BYTES') or MAX_BACKUP)
     if backup_limit <= 0:
         raise ValueError('BACKUP_MAX_BYTES must be a positive integer')
-    engine = create_db_engine(database_url or config.get('DATABASE_URL') or 'postgresql+psycopg://modelkb:modelkb@127.0.0.1:5432/modelkb')
-    chat = ChatService(engine, provider if provider is not None else (
-        LangChainProvider(runtime_settings) if runtime_settings is not None else LangChainProvider.from_env()))
-    env = dict(runtime_settings) if runtime_settings is not None else dict(getattr(chat.provider, 'settings', None) or config)
-    private_path = Path(settings_path).resolve() if settings_path is not None else storage.parent / '.modelkb-private-settings.json'
+    engine = create_db_engine(
+        database_url
+        or config.get('DATABASE_URL')
+        or 'postgresql+psycopg://modelkb:modelkb@127.0.0.1:5432/modelkb'
+    )
+    chat = ChatService(
+        engine,
+        provider
+        if provider is not None
+        else (
+            LangChainProvider(runtime_settings)
+            if runtime_settings is not None
+            else LangChainProvider.from_env()
+        ),
+    )
+    env = (
+        dict(runtime_settings)
+        if runtime_settings is not None
+        else dict(getattr(chat.provider, 'settings', None) or config)
+    )
+    private_path = (
+        Path(settings_path).resolve()
+        if settings_path is not None
+        else storage.parent / '.modelkb-private-settings.json'
+    )
     if private_path == storage or storage in private_path.parents:
         raise ValueError('Private settings must be outside attachment storage')
     user_settings = PrivateSettings(private_path, env, credentials=credential_store)
     jobs = JobService(engine)
     experiments = ExperimentService(engine, chat.provider, chat.lock, settings=env, jobs=jobs)
-    chat.system_prompt = experiments.system_prompt = compose_prompt(user_settings.data['custom_prompt'])
+    chat.system_prompt = experiments.system_prompt = compose_prompt(
+        user_settings.data['custom_prompt']
+    )
     return Runtime(engine, storage, backup_limit, chat, experiments, user_settings, jobs)
 
 

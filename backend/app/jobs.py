@@ -3,6 +3,7 @@
 No worker is launched by importing this module. Work is explicitly submitted;
 restart marks interrupted jobs stopped rather than silently repeating model calls.
 """
+
 import asyncio
 from contextlib import suppress
 from fastapi import HTTPException
@@ -16,10 +17,12 @@ ACTIVE = ('queued', 'running')
 
 
 def snapshot(row):
-    return {column.name: (value.isoformat() if hasattr(value, 'isoformat') else value)
-            for column in row.__table__.columns
-            if column.name != 'request_hash'
-            for value in [getattr(row, column.name)]}
+    return {
+        column.name: (value.isoformat() if hasattr(value, 'isoformat') else value)
+        for column in row.__table__.columns
+        if column.name != 'request_hash'
+        for value in [getattr(row, column.name)]
+    }
 
 
 class JobContext:
@@ -74,7 +77,9 @@ class JobService:
         async with self.lock:
             fingerprint = digest(parameters)
             with Session(self.engine) as db:
-                existing = db.scalar(select(Job).where(Job.kind == kind, Job.request_id == request_id))
+                existing = db.scalar(
+                    select(Job).where(Job.kind == kind, Job.request_id == request_id)
+                )
                 if existing is not None:
                     if existing.request_hash != fingerprint:
                         raise HTTPException(409, 'request_id 已用于不同任务参数。')
@@ -96,8 +101,12 @@ class JobService:
             status = (result or {}).get('status', 'completed')
             if status not in ('completed', 'failed', 'stopped'):
                 status = 'failed'
-            self.update(id, status=status, result=result,
-                        error=None if status == 'completed' else '任务未完成，请检查结果与模型配置。')
+            self.update(
+                id,
+                status=status,
+                result=result,
+                error=None if status == 'completed' else '任务未完成，请检查结果与模型配置。',
+            )
         except asyncio.CancelledError:
             callback = self.cancel_callbacks.get(id)
             if callback is not None:

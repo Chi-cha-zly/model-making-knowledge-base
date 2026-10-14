@@ -1,4 +1,5 @@
 """Independent evaluation records. Reports are immutable JSON snapshots."""
+
 from sqlalchemy import Integer, JSON, String
 from sqlalchemy.orm import Mapped, mapped_column
 from .models import Base

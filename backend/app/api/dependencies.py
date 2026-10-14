@@ -1,4 +1,5 @@
 """Request-scoped dependencies; all runtime resources come from app.state."""
+
 from fastapi import Depends, Request
 from sqlalchemy.orm import Session
 

@@ -1,4 +1,5 @@
 """Explicit real PostgreSQL isolation: each test receives fresh migrated schemas."""
+
 import os
 from pathlib import Path
 from uuid import uuid4
@@ -16,7 +17,7 @@ _connections = set()
 _owned_urls = set()
 
 
-@event.listens_for(Engine, "engine_connect")
+@event.listens_for(Engine, 'engine_connect')
 def collect_test_engine(connection):
     if connection.engine.url in _owned_urls:
         _engines.add(connection.engine)
@@ -46,7 +47,9 @@ def test_database_url(key=None):
         conn.execute(text('CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public'))
         conn.execute(text(f'CREATE SCHEMA "{schema}"'))
     _schemas.append((admin, schema))
-    url = base.update_query_dict({'options': f'-csearch_path={schema},public'}).render_as_string(hide_password=False)
+    url = base.update_query_dict({'options': f'-csearch_path={schema},public'}).render_as_string(
+        hide_password=False
+    )
     _owned_urls.add(make_url(url))
     engine = create_engine(url, poolclass=NullPool)
     cfg = Config(str(Path(__file__).resolve().parents[1] / 'alembic.ini'))
