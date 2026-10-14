@@ -19,6 +19,7 @@ backend = supplied_connection.dialect.name if supplied_connection is not None el
 if backend != "postgresql":
     raise ValueError("PostgreSQL is required; copy legacy SQLite data with the explicit migration tool")
 target_metadata = Base.metadata
+version_table_schema = config.attributes.get("version_table_schema")
 
 
 def include_object(object_, name, type_, reflected, compare_to):
@@ -27,7 +28,7 @@ def include_object(object_, name, type_, reflected, compare_to):
 
 
 def run_migrations_offline():
-    context.configure(url=config.get_main_option("sqlalchemy.url"), target_metadata=target_metadata, literal_binds=True)
+    context.configure(url=config.get_main_option("sqlalchemy.url"), target_metadata=target_metadata, literal_binds=True, version_table_schema=version_table_schema)
     with context.begin_transaction():
         context.run_migrations()
 
@@ -35,13 +36,13 @@ def run_migrations_offline():
 def run_migrations_online():
     supplied = config.attributes.get("connection")
     if supplied is not None:
-        context.configure(connection=supplied, target_metadata=target_metadata, compare_type=True, include_object=include_object)
+        context.configure(connection=supplied, target_metadata=target_metadata, compare_type=True, include_object=include_object, version_table_schema=version_table_schema)
         with context.begin_transaction():
             context.run_migrations()
         return
     connectable = engine_from_config(config.get_section(config.config_ini_section), prefix="sqlalchemy.", poolclass=pool.NullPool)
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata, compare_type=True, include_object=include_object)
+        context.configure(connection=connection, target_metadata=target_metadata, compare_type=True, include_object=include_object, version_table_schema=version_table_schema)
         with context.begin_transaction():
             context.run_migrations()
 

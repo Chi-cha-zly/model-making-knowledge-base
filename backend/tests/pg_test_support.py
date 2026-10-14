@@ -12,12 +12,21 @@ from alembic.config import Config
 _urls = {}
 _schemas = []
 _engines = set()
+_connections = set()
+_owned_urls = set()
 
 
 @event.listens_for(Engine, "engine_connect")
 def collect_test_engine(connection):
-    if "search_path=test_" in str(connection.engine.url.query.get("options", "")):
+    if connection.engine.url in _owned_urls:
         _engines.add(connection.engine)
+        _connections.add(connection)
+
+
+def _drop_schema(engine, schema):
+    with engine.begin() as conn:
+        conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+        conn.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
 
 
 def test_database_url(key=None):
@@ -38,13 +47,30 @@ def test_database_url(key=None):
         conn.execute(text(f'CREATE SCHEMA "{schema}"'))
     _schemas.append((admin, schema))
     url = base.update_query_dict({'options': f'-csearch_path={schema},public'}).render_as_string(hide_password=False)
+    _owned_urls.add(make_url(url))
     engine = create_engine(url, poolclass=NullPool)
     cfg = Config(str(Path(__file__).resolve().parents[1] / 'alembic.ini'))
     cfg.set_main_option('script_location', str(Path(__file__).resolve().parents[1] / 'alembic'))
-    with engine.begin() as conn:
-        cfg.attributes['connection'] = conn
-        command.upgrade(cfg, 'head')
-    engine.dispose()
+    # public remains visible for extension types/operators, but never provides
+    # another catalog's migration version for this schema.
+    cfg.attributes['version_table_schema'] = schema
+    try:
+        with engine.begin() as conn:
+            cfg.attributes['connection'] = conn
+            command.upgrade(cfg, 'head')
+    except BaseException as failure:
+        try:
+            _drop_schema(admin, schema)
+        except Exception:
+            # Keep ownership registered for teardown retry without hiding the
+            # original migration error behind a cleanup error.
+            failure.add_note(f'Cleanup of test schema {schema} failed; teardown will retry')
+        else:
+            _schemas.remove((admin, schema))
+            admin.dispose()
+        raise
+    finally:
+        engine.dispose()
     _urls[key] = url
     return url
 
@@ -53,12 +79,18 @@ test_database_url.__test__ = False
 
 
 def cleanup():
+    # Engine.dispose() alone leaves checked-out connections alive. Close their
+    # transactions first so DROP SCHEMA cannot wait on this process's own locks.
+    for connection in _connections:
+        connection.close()
+    _connections.clear()
     for engine in _engines:
         engine.dispose()
     _engines.clear()
     for engine, schema in reversed(_schemas):
-        with engine.begin() as conn:
-            conn.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        _drop_schema(engine, schema)
         engine.dispose()
+        _schemas.remove((engine, schema))
     _schemas.clear()
     _urls.clear()
+    _owned_urls.clear()
