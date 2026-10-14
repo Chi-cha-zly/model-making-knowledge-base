@@ -10,6 +10,14 @@ export type ProfileInput = {
 export type ProfileView = Omit<ProfileInput, 'api_key'> & {
   id: string
   has_api_key: boolean
+  credential_status?:
+    | 'environment'
+    | 'not_saved'
+    | 'saved_unverified'
+    | 'available'
+    | 'missing'
+    | 'unavailable'
+    | 'migration_pending'
   read_only: boolean
 }
 export type SettingsView = {
@@ -19,6 +27,8 @@ export type SettingsView = {
   base_prompt: string
   prompt_presets: { id: string; name: string; text: string }[]
   storage_notice: string
+  credential_cleanup_pending?: boolean
+  credential_durability_pending?: boolean
 }
 export type ConnectionTest = {
   ok: boolean
@@ -45,6 +55,7 @@ async function request<T>(
       409: '当前有任务运行或连接正在使用，请停止任务或切换连接后重试。',
       422: '设置未通过校验，请检查接口地址、模型和字段范围。',
       403: '请求来源未通过验证，请从本机应用重试。',
+      503: '系统凭据不可用或恢复尚未完成。请检查凭据库是否已解锁；若凭据缺失，请重新输入 API key。恢复未完成时请重新启动，不会退回明文保存。',
     }
     throw new Error(
       messages[response.status] ??

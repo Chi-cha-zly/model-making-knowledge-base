@@ -110,6 +110,9 @@ async function open() {
       <EvaluationWorkbench onOpenReference={() => {}} />
     </HashRouter>,
   )
+  await user.click(
+    screen.getByText('历史实验（冻结维护）', { selector: 'summary' }),
+  )
   await user.click(screen.getByRole('button', { name: 'LangSmith 实验' }))
   await screen.findByRole('heading', { name: 'LangSmith 实验' })
   return user
@@ -123,10 +126,10 @@ it('blocks cloud execution without a key and explains configuration is not conne
   expect(screen.queryByLabelText(/密钥/)).not.toBeInTheDocument()
   expect(posts).toHaveLength(0)
 })
-it('defaults to demo retrieval, caps sample controls, starts a bounded job and stops it', async () => {
+it('defaults to real retrieval, caps sample controls, starts a bounded job and stops it', async () => {
   const user = await open()
   await screen.findByText(/配置已读取/)
-  expect(screen.getByLabelText('实验测评集')).toHaveValue('demo')
+  expect(screen.getByLabelText('实验测评集')).toHaveValue('live')
   expect(screen.getByLabelText('抽样题数')).toHaveValue('3')
   expect(
     screen.getByLabelText('抽样题数').querySelectorAll('option'),
@@ -135,7 +138,7 @@ it('defaults to demo retrieval, caps sample controls, starts a bounded job and s
   await user.click(screen.getByRole('button', { name: '开始云端实验' }))
   await screen.findByRole('heading', { name: /实验 #1/ })
   expect(posts[0]).toMatchObject({
-    dataset_id: 'demo',
+    dataset_id: 'live',
     mode: 'retrieval',
     limit: 3,
     k: 5,
@@ -272,22 +275,25 @@ it('renders result costs, nullable metrics and safe cloud links', async () => {
     screen.queryByRole('link', { name: '恶意链接' }),
   ).not.toBeInTheDocument()
 })
-it('restores the cloud tab after a page refresh without starting another experiment', async () => {
-  window.history.replaceState(null, '', '/#evaluation-experiments')
-  jobs = [job]
-  render(
-    <HashRouter>
-      <EvaluationWorkbench onOpenReference={() => {}} />
-    </HashRouter>,
-  )
-  expect(
-    await screen.findByRole('heading', { name: 'LangSmith 实验' }),
-  ).toBeInTheDocument()
-  expect(
-    await screen.findByRole('heading', { name: /实验 #1/ }),
-  ).toBeInTheDocument()
-  expect(posts).toHaveLength(0)
-})
+it.each(['/evaluation-experiments', '/evaluation/experiments'])(
+  'restores the legacy route %s without starting another experiment',
+  async (route) => {
+    window.history.replaceState(null, '', `/#${route}`)
+    jobs = [job]
+    render(
+      <HashRouter>
+        <EvaluationWorkbench onOpenReference={() => {}} />
+      </HashRouter>,
+    )
+    expect(
+      await screen.findByRole('heading', { name: 'LangSmith 实验' }),
+    ).toBeInTheDocument()
+    expect(
+      await screen.findByRole('heading', { name: /实验 #1/ }),
+    ).toBeInTheDocument()
+    expect(posts).toHaveLength(0)
+  },
+)
 it('does not let an in-flight poll overwrite stopped status', async () => {
   jobs = [job]
   const original = fetch
@@ -371,4 +377,49 @@ it('keeps polling after a stop request fails while an older poll is pending', as
     await vi.advanceTimersByTimeAsync(1600)
   })
   expect(screen.getByRole('progressbar')).toHaveAttribute('value', '4')
+})
+
+it('requires explicit demo opt-in without replacing the real selection', async () => {
+  const user = await open()
+  await screen.findByText(/配置已读取/)
+  const select = screen.getByLabelText('实验测评集')
+  expect(select).toHaveValue('live')
+  expect(
+    screen.queryByRole('option', { name: /示例集/ }),
+  ).not.toBeInTheDocument()
+  await user.click(screen.getByLabelText('显示合成示例（历史）'))
+  expect(select).toHaveValue('live')
+  await user.selectOptions(select, 'demo')
+  await user.click(screen.getByLabelText('显示合成示例（历史）'))
+  expect(select).toHaveValue('live')
+  await user.click(screen.getByLabelText('显示合成示例（历史）'))
+  await user.selectOptions(select, 'demo')
+  await user.click(screen.getByRole('button', { name: '开始云端实验' }))
+  await waitFor(() => expect(posts).toHaveLength(1))
+  expect(posts[0].dataset_id).toBe('demo')
+})
+
+it('does not default to demo when no real experiment datasets exist and keeps demo history readable', async () => {
+  const original = fetch
+  jobs = [{ ...job, status: 'completed' }]
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((url: any, init?: RequestInit) =>
+      String(url).endsWith('/evaluations/datasets')
+        ? reply([dataset])
+        : original(url, init),
+    ),
+  )
+  const user = await open()
+  await screen.findByText(/配置已读取/)
+  expect(screen.getByLabelText('实验测评集')).toHaveValue('')
+  expect(screen.getByRole('button', { name: '开始云端实验' })).toBeDisabled()
+  expect(
+    screen.getByRole('link', { name: '新建真实资料测评集' }),
+  ).toHaveAttribute('href', '#/evaluation/datasets')
+  await user.click(screen.getByRole('button', { name: /查看实验 #1/ }))
+  expect(
+    await screen.findByRole('heading', { name: /实验 #1/ }),
+  ).toBeInTheDocument()
+  expect(screen.getByLabelText('显示合成示例（历史）')).not.toBeChecked()
 })

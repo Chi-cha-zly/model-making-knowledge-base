@@ -176,7 +176,8 @@ def test_omitted_or_null_key_keeps_saved_secret(tmp_path):
         for payload in (omitted,{**omitted,'api_key':None}):
             response=c.put(f'/api/v1/settings/profiles/{id}',json=payload)
             assert response.status_code==200 and response.json()['profiles'][-1]['has_api_key']
-        assert json.loads((tmp_path/'private.json').read_text())['profiles'][0]['api_key']=='saved-test-secret'
+        assert 'saved-test-secret' not in (tmp_path/'private.json').read_text()
+        assert c.app.state.user_settings.values(id=id)['AI_API_KEY']=='saved-test-secret'
 
 def test_persisted_active_chat_blocks_settings(tmp_path):
     import asyncio
@@ -216,3 +217,44 @@ def test_injected_provider_preserved_with_saved_active_profile(tmp_path):
     app=create_app(test_database_url(f"{tmp_path/'db.sqlite'}"),tmp_path/'uploads',provider=provider,settings_path=tmp_path/'private.json',runtime_settings=FAKE)
     assert app.state.chat.provider is provider
     assert app.state.experiments.provider is provider
+
+
+def test_vault_write_failure_is_sanitized_and_keeps_active_provider_and_manifest(tmp_path, fake_system_credentials):
+    app=make(tmp_path)
+    with TestClient(app) as client:
+        id=client.post('/api/v1/settings/profiles',json=PAYLOAD).json()['profiles'][-1]['id']
+        client.post(f'/api/v1/settings/profiles/{id}/activate',json={})
+        provider=app.state.chat.provider; before=(tmp_path/'private.json').read_bytes()
+        fake_system_credentials.fail_set_number=fake_system_credentials.writes+1
+        response=client.put(f'/api/v1/settings/profiles/{id}',json={**PAYLOAD,'api_key':'new-secret'})
+        assert response.status_code==503 and 'new-secret' not in response.text and 'synthetic-secret' not in response.text
+        assert app.state.chat.provider is provider and (tmp_path/'private.json').read_bytes()==before
+
+
+def test_postrename_durability_warning_keeps_provider_aligned_with_visible_manifest(tmp_path, monkeypatch):
+    app=make(tmp_path)
+    with TestClient(app) as client:
+        id=client.post('/api/v1/settings/profiles',json=PAYLOAD).json()['profiles'][-1]['id']
+        client.post(f'/api/v1/settings/profiles/{id}/activate',json={})
+        store=app.state.user_settings; sync=store._sync_directory
+        def fail_after_manifest(directory):
+            manifest=json.loads((tmp_path/'private.json').read_text())
+            if manifest['profiles'][0]['model']=='changed-model': raise OSError('sync failed')
+            sync(directory)
+        monkeypatch.setattr(store,'_sync_directory',fail_after_manifest)
+        result=client.put(f'/api/v1/settings/profiles/{id}',json={**PAYLOAD,'model':'changed-model','api_key':'new-secret'})
+        assert result.status_code==200 and result.json()['credential_durability_pending']
+        assert app.state.chat.provider.model=='changed-model'
+        assert app.state.chat.provider.api_key=='new-secret'
+        assert store.values()['AI_API_KEY']=='new-secret'
+
+
+def test_custom_profile_credentials_are_deferred_until_managed_startup(tmp_path):
+    from test_credentials import FakeCredentials, legacy
+    path=tmp_path/'private.json'; legacy(path)
+    vault=FakeCredentials()
+    app=create_app(test_database_url(tmp_path/'deferred'),tmp_path/'uploads',settings_path=path,runtime_settings=FAKE,credential_store=vault)
+    assert vault.values=={} and 'synthetic-secret' in path.read_text()
+    with TestClient(app):
+        assert app.state.chat.provider.api_key=='synthetic-secret-0'
+    assert 'synthetic-secret' not in path.read_text()

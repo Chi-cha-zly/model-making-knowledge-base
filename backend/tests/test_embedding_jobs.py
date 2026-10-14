@@ -269,3 +269,124 @@ def test_progress_reports_each_terminal_document(tmp_path):
     assert result['documents'][0]['status'] == 'ready'
     assert seen == [(0,1),(1,1)]
     assert rows(engine)[-1][2] == 'ready'
+
+
+@pytest.mark.parametrize('model', ['text-embedding-v3', 'text-embedding-v4'])
+@pytest.mark.parametrize('count', [10, 11, 12, 23])
+def test_bailian_model_batches_at_ten_and_preserves_global_order(model, count):
+    calls = []
+    texts = [f'input {i}' for i in range(count)]
+    def handler(request):
+        batch = json.loads(request.content)['input']
+        calls.append(batch)
+        if len(batch) > 10:
+            return httpx.Response(400, json={'error': {'message': 'maximum 10 items'}})
+        indices = list(reversed(range(len(batch))))
+        return response([[float(batch[index].split()[-1]), .5] for index in indices], indices)
+    p = LangChainProvider(settings={**configuration(), 'EMBEDDING_MODEL': model},
+                          transport=httpx.MockTransport(handler))
+    assert asyncio.run(p.embed(texts)) == [[float(i), .5] for i in range(count)]
+    assert calls == [texts[start:start + 10] for start in range(0, count, 10)]
+
+
+def test_other_embedding_models_retain_existing_batch_capacity():
+    calls = []
+    def handler(request):
+        batch = json.loads(request.content)['input']
+        calls.append(batch)
+        return response([[float(i)] for i in range(len(batch))])
+    assert len(asyncio.run(provider(handler).embed(['input'] * 23))) == 23
+    assert len(calls) == 1 and len(calls[0]) == 23
+
+
+def test_bailian_later_request_failure_never_retries_or_returns_partial_vectors():
+    calls = []
+    def handler(request):
+        batch = json.loads(request.content)['input']
+        calls.append(batch)
+        if len(batch) > 10 or len(calls) == 2:
+            return httpx.Response(400, json={'error': {'message': 'private-provider-body'}})
+        return response([[1., .5]] * len(batch))
+    p = LangChainProvider(settings={**configuration(), 'EMBEDDING_MODEL': 'text-embedding-v4'},
+                          transport=httpx.MockTransport(handler))
+    with pytest.raises(ProviderError) as exc:
+        asyncio.run(p.embed(['input'] * 23))
+    assert [len(batch) for batch in calls] == [10, 10]
+    assert 'HTTP 400' in str(exc.value) and 'private-provider-body' not in str(exc.value)
+
+
+def test_bailian_cancellation_during_second_request_stops_remaining_batches():
+    calls = []
+    async def handler(request):
+        batch = json.loads(request.content)['input']
+        calls.append(batch)
+        if len(batch) > 10:
+            return httpx.Response(400, json={'error': {'message': 'maximum 10 items'}})
+        if len(calls) == 2:
+            raise asyncio.CancelledError()
+        return response([[1., .5]] * len(batch))
+    p = LangChainProvider(settings={**configuration(), 'EMBEDDING_MODEL': 'text-embedding-v4'},
+                          transport=httpx.MockTransport(handler))
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(p.embed(['input'] * 23))
+    assert [len(batch) for batch in calls] == [10, 10]
+
+
+def test_bailian_dimensions_must_match_across_sdk_batches():
+    calls = []
+    def handler(request):
+        batch = json.loads(request.content)['input']
+        calls.append(batch)
+        if len(batch) > 10:
+            return httpx.Response(400, json={'error': {'message': 'maximum 10 items'}})
+        return response([[1.] * (2 if len(calls) == 1 else 3)] * len(batch))
+    p = LangChainProvider(settings={**configuration(), 'EMBEDDING_MODEL': 'text-embedding-v4'},
+                          transport=httpx.MockTransport(handler))
+    with pytest.raises(ProviderError, match='不一致的维度'):
+        asyncio.run(p.embed(['input'] * 11))
+    assert [len(batch) for batch in calls] == [10, 1]
+
+
+@pytest.mark.parametrize('failure', [None, 'http', 'dimensions', 'cancel'])
+def test_bailian_sdk_sub_batches_preserve_document_atomicity_and_existing_ready(tmp_path, failure):
+    from app.embedding_jobs import embed_pending
+    engine = seed(tmp_path, count=23)
+    with Session(engine) as db:
+        ready = db.scalar(select(Embedding).join(Chunk).where(Chunk.version == 2, Chunk.ordinal == 0))
+        ready.status, ready.model, ready.dimensions, ready.vector = 'ready', 'text-embedding-v4', 2, [9., 9.]
+        db.commit()
+    before = rows(engine)
+    calls = []
+    def handler(request):
+        batch = json.loads(request.content)['input']
+        calls.append(batch)
+        assert rows(engine) == before
+        assert len(batch) <= 10
+        if len(calls) == 2 and failure == 'cancel':
+            raise asyncio.CancelledError()
+        if len(calls) == 2 and failure == 'http':
+            return httpx.Response(400, json={'error': {'message': 'private-batch-error'}})
+        indices = list(reversed(range(len(batch))))
+        vectors = [[float(batch[index].split()[-1]), .5] for index in indices]
+        if len(calls) == 2 and failure == 'dimensions':
+            vectors = [vector + [1.] for vector in vectors]
+        return response(vectors, indices)
+    p = LangChainProvider(settings={**configuration(), 'EMBEDDING_MODEL': 'text-embedding-v4'},
+                          transport=httpx.MockTransport(handler))
+    if failure == 'cancel':
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(embed_pending(engine, p, apply=True))
+        assert rows(engine) == before
+    else:
+        result = asyncio.run(embed_pending(engine, p, apply=True))
+        state = rows(engine)
+        assert state[:2] == before[:2]  # Prior document version and existing ready vector survive.
+        if failure:
+            assert result['status'] == 'partial_failure'
+            assert all(row[2] == 'failed' and row[5] is None for row in state[2:])
+            assert 'private-batch-error' not in json.dumps(result)
+        else:
+            assert result['status'] == 'completed'
+            assert all(row[2] == 'ready' for row in state[2:])
+            assert [row[5] for row in state[2:]] == [[float(i), .5] for i in range(1, 23)]
+    assert [len(batch) for batch in calls] == ([10, 10] if failure in {'http', 'cancel'} else [10, 10, 2])

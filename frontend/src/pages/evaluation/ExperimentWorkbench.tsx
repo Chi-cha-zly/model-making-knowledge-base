@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { evaluationApi, type Dataset } from '../../evaluationApi'
+import { Link } from 'react-router'
+import DemoDatasetToggle, { firstRealDatasetId } from './DemoDatasetToggle'
 import {
   experimentApi,
   type Experiment,
@@ -126,6 +128,7 @@ export default function ExperimentWorkbench() {
   const [status, setStatus] = useState<IntegrationStatus | null>(null),
     [datasets, setDatasets] = useState<Dataset[]>([]),
     [history, setHistory] = useState<Experiment[]>([])
+  const [showDemo, setShowDemo] = useState(false)
   const [datasetId, setDatasetId] = useState(''),
     [mode, setMode] = useState<'retrieval' | 'answers'>('retrieval'),
     [models, setModels] = useState<string[]>([]),
@@ -157,7 +160,7 @@ export default function ExperimentWorkbench() {
         setStatus(s)
         setDatasets(d)
         setHistory(h)
-        setDatasetId(d.find((x) => x.corpus === 'demo')?.id || d[0]?.id || '')
+        setDatasetId(firstRealDatasetId(d))
         setModels(s.model ? [s.model] : [])
         const running = h.find(active)
         setActiveId(running?.id ?? null)
@@ -294,6 +297,7 @@ export default function ExperimentWorkbench() {
     activeId === null &&
     !!status?.langsmith.configured &&
     !!current?.case_count &&
+    (current.corpus !== 'demo' || showDemo) &&
     (mode === 'retrieval' || (!!status.model_configured && models.length > 0))
   return (
     <section className="experiment-workbench">
@@ -358,14 +362,32 @@ export default function ExperimentWorkbench() {
               value={datasetId}
               onChange={(e) => setDatasetId(e.target.value)}
             >
-              {datasets.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.name}（{d.corpus === 'demo' ? '合成示例' : '本机真实资料'}
-                  ，{d.case_count} 题）
-                </option>
-              ))}
+              <option value="">请选择测评集</option>
+              {datasets
+                .filter((d) => showDemo || d.corpus === 'live')
+                .map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name}（
+                    {d.corpus === 'demo' ? '合成示例' : '本机真实资料'}，
+                    {d.case_count} 题）
+                  </option>
+                ))}
             </select>
           </label>
+          <DemoDatasetToggle
+            checked={showDemo}
+            onChange={(enabled) => {
+              setShowDemo(enabled)
+              if (!enabled && current?.corpus === 'demo')
+                setDatasetId(firstRealDatasetId(datasets))
+            }}
+          />
+          {!loading && !firstRealDatasetId(datasets) && (
+            <p className="evaluation-note">
+              暂无真实资料测评集。
+              <Link to="/evaluation/datasets">新建真实资料测评集</Link>
+            </p>
+          )}
           <label>
             实验模式
             <select
@@ -422,7 +444,9 @@ export default function ExperimentWorkbench() {
           LangSmith。
           {current?.corpus === 'live'
             ? '当前选择含本机真实资料，请确认这些内容适合上传。'
-            : '合成示例仅用于演示，不代表真实业务质量。'}
+            : current?.corpus === 'demo'
+              ? '合成示例仅用于演示，不代表真实业务质量。'
+              : '请先选择测评集。'}
         </p>
         <p>
           默认抽样 3 题，最多 10

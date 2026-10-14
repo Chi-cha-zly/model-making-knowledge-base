@@ -26,7 +26,7 @@ beforeEach(() => {
     custom_prompt: '',
     base_prompt: '固定引用规则',
     prompt_presets: [{ id: 'concise', name: '简洁回答', text: '请简洁回答。' }],
-    storage_notice: '密钥明文保存在本机受限文件，不包含在普通备份。',
+    storage_notice: '密钥保存在系统凭据库，不包含在普通备份。',
   }
   vi.stubGlobal(
     'fetch',
@@ -84,6 +84,9 @@ it('requires replacement or explicit clear for endpoint change and clears draft 
   await user.selectOptions(screen.getByLabelText('选择连接'), 'env')
   expect(screen.queryByDisplayValue('draft-secret')).not.toBeInTheDocument()
   expect(screen.getByLabelText('连接名称')).toBeDisabled()
+  expect(
+    screen.getByText('密钥来自只读环境配置，不会回显。'),
+  ).toBeInTheDocument()
 })
 it('previews presets and reset as drafts until saved', async () => {
   const user = userEvent.setup()
@@ -169,4 +172,48 @@ it('requires explicit clear when changing an existing local endpoint without a s
     base_url: 'http://localhost:9001/v1',
     api_key: '',
   })
+})
+
+it.each([
+  ['saved_unverified', '密钥已保存，尚未验证系统凭据是否可读取。'],
+  ['available', '系统凭据可读取；服务连接仍需单独测试。'],
+  ['missing', '系统凭据已缺失，请重新输入 API key 并保存。'],
+  ['unavailable', '系统凭据库不可用，请解锁后重试；不会改用明文或环境密钥。'],
+])(
+  'shows credential state %s separately from saved-key presence',
+  async (status, message) => {
+    state.profiles = state.profiles.map((p: any) =>
+      p.id === 'one' ? { ...p, credential_status: status } : p,
+    )
+    render(<SettingsWorkbench />)
+    expect(await screen.findByText(message)).toBeInTheDocument()
+    expect(screen.getByLabelText('API Key')).toHaveValue('')
+  },
+)
+
+it('shows pending durability and cleanup while keeping the saved connection editable', async () => {
+  state.credential_cleanup_pending = true
+  state.credential_durability_pending = true
+  render(<SettingsWorkbench />)
+  expect(
+    await screen.findByText(/设置已更新，但磁盘持久化确认未完成/),
+  ).toBeInTheDocument()
+  expect(screen.getByText(/旧凭据清理尚未完成/)).toBeInTheDocument()
+  expect(screen.getByLabelText('连接名称')).not.toBeDisabled()
+})
+
+it('explains vault unavailability without rendering backend errors or secrets', async () => {
+  const user = userEvent.setup()
+  render(<SettingsWorkbench />)
+  await user.type(await screen.findByLabelText('API Key'), 'temporary-secret')
+  vi.mocked(fetch).mockResolvedValue(
+    new Response(JSON.stringify({ detail: 'temporary-secret upstream' }), {
+      status: 503,
+    }),
+  )
+  await user.click(screen.getByRole('button', { name: '保存连接' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('系统凭据')
+  expect(
+    screen.queryByText(/temporary-secret upstream/),
+  ).not.toBeInTheDocument()
 })

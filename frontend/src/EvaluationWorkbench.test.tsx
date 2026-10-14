@@ -5,6 +5,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -145,11 +146,13 @@ async function sets() {
   const user = userEvent.setup()
   render(<App />)
   await user.click(await screen.findByRole('button', { name: '测评集' }))
-  await screen.findByRole('option', { name: /人工示例集/ })
+  await screen.findByLabelText('选择测评集')
   return user
 }
 it('runs builtin, explains null metrics, and never opens a real record from synthetic hits', async () => {
   const user = await sets()
+  await user.click(screen.getByLabelText('显示合成示例（历史）'))
+  await user.selectOptions(screen.getByLabelText('选择测评集'), 'demo-v1')
   await user.click(screen.getByRole('button', { name: '运行测评' }))
   expect(
     await screen.findByRole('heading', { name: /报告 #1/ }),
@@ -169,6 +172,8 @@ it('shows no matches and actionable server errors', async () => {
   await user.click(screen.getByRole('button', { name: '对比检索' }))
   expect(await screen.findAllByText('没有匹配资料')).toHaveLength(2)
   await user.click(screen.getByRole('button', { name: '测评集' }))
+  await user.click(screen.getByLabelText('显示合成示例（历史）'))
+  await user.selectOptions(screen.getByLabelText('选择测评集'), 'demo-v1')
   fail = true
   await user.click(screen.getByRole('button', { name: '运行测评' }))
   expect(await screen.findByRole('alert')).toHaveTextContent('正例已撤回')
@@ -307,6 +312,7 @@ it('builds custom positive judgments with editable grades and confirms deletion'
     await screen.findByLabelText('第 1 题 technique:1 相关等级'),
   ).toHaveValue('2')
   await user.click(screen.getByRole('button', { name: '取消编辑' }))
+  await user.click(screen.getByLabelText('显示合成示例（历史）'))
   vi.spyOn(window, 'confirm')
     .mockReturnValueOnce(false)
     .mockReturnValueOnce(true)
@@ -314,6 +320,8 @@ it('builds custom positive judgments with editable grades and confirms deletion'
   expect(screen.getByRole('option', { name: /资料测评/ })).toBeInTheDocument()
   await user.click(screen.getByRole('button', { name: '删除测评集' }))
   expect(await screen.findByText('测评集已删除')).toBeInTheDocument()
+  expect(screen.getByLabelText('选择测评集')).toHaveValue('')
+  expect(screen.getByRole('button', { name: '运行测评' })).toBeDisabled()
   expect(
     screen.queryByRole('option', { name: /资料测评/ }),
   ).not.toBeInTheDocument()
@@ -494,4 +502,62 @@ it('shows matched original images in live retrieval preview', async () => {
   expect(
     await screen.findByRole('img', { name: '实际命中图 · 原始图片 1' }),
   ).toHaveAttribute('src', '/api/v1/attachments/9')
+})
+
+it('keeps only core evaluation tabs and a collapsed historical experiment entry', async () => {
+  const user = userEvent.setup()
+  render(<App />)
+  const tabs = screen.getByRole('navigation', { name: '测评工作区' })
+  expect(within(tabs).getAllByRole('button')).toHaveLength(2)
+  const entry = screen.getByText('历史实验（冻结维护）', {
+    selector: 'summary',
+  })
+  expect(entry.closest('details')).not.toHaveAttribute('open')
+  expect(
+    screen.getByRole('button', { name: 'LangSmith 实验' }),
+  ).not.toBeVisible()
+  await user.click(entry)
+  expect(screen.getByRole('button', { name: 'LangSmith 实验' })).toBeVisible()
+})
+
+it('defaults to real datasets even when demo comes first and requires opt-in to select demo', async () => {
+  saved = {
+    ...dataset,
+    id: 'custom',
+    name: '真实资料集',
+    corpus: 'live',
+    builtin: false,
+  }
+  const user = await sets()
+  const select = screen.getByLabelText('选择测评集')
+  expect(select).toHaveValue('custom')
+  expect(
+    screen.queryByRole('option', { name: /人工示例集/ }),
+  ).not.toBeInTheDocument()
+  await user.click(screen.getByLabelText('显示合成示例（历史）'))
+  expect(select).toHaveValue('custom')
+  await user.selectOptions(select, 'demo-v1')
+  await user.click(screen.getByLabelText('显示合成示例（历史）'))
+  expect(select).toHaveValue('custom')
+})
+
+it('leaves demo-only catalogues unselected and opens historical demo reports without opt-in', async () => {
+  history = [report]
+  const user = await sets()
+  const select = screen.getByLabelText('选择测评集')
+  expect(select).toHaveValue('')
+  expect(screen.getByRole('button', { name: '运行测评' })).toBeDisabled()
+  expect(screen.getByText(/暂无真实资料测评集/)).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: '新建测评集' })).toBeEnabled()
+  await user.click(screen.getByRole('button', { name: /查看报告 #1/ }))
+  expect(
+    await screen.findByRole('heading', { name: /报告 #1/ }),
+  ).toBeInTheDocument()
+  expect(screen.getByLabelText('显示合成示例（历史）')).not.toBeChecked()
+  await user.click(screen.getByLabelText('显示合成示例（历史）'))
+  expect(select).toHaveValue('')
+  await user.selectOptions(select, 'demo-v1')
+  expect(screen.getByRole('button', { name: '运行测评' })).toBeEnabled()
+  await user.click(screen.getByLabelText('显示合成示例（历史）'))
+  expect(select).toHaveValue('')
 })

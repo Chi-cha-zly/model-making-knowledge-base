@@ -16,6 +16,7 @@ import {
   type RunSummary,
 } from '../../evaluationApi'
 import ExperimentWorkbench from './ExperimentWorkbench'
+import DemoDatasetToggle, { firstRealDatasetId } from './DemoDatasetToggle'
 const errorText = (e: unknown) =>
   e instanceof Error ? e.message : '操作失败，请重试'
 const metricNames = [
@@ -233,6 +234,11 @@ export default function EvaluationWorkbench({
   const setTab = (next: 'preview' | 'datasets' | 'experiments') => {
     void navigate(next === 'preview' ? '/evaluation' : `/evaluation/${next}`)
   }
+  const [historyExpanded, setHistoryExpanded] = useState(tab === 'experiments')
+  const [showDemo, setShowDemo] = useState(false)
+  useEffect(() => {
+    if (tab === 'experiments') setHistoryExpanded(true)
+  }, [tab])
   const [query, setQuery] = useState(''),
     [k, setK] = useState(5),
     [preview, setPreview] = useState<Preview | null>(null)
@@ -259,7 +265,7 @@ export default function EvaluationWorkbench({
       .then(([d, h]) => {
         if (alive.current) {
           setDatasets(d)
-          setSelected(d[0]?.id || '')
+          setSelected(firstRealDatasetId(d))
           setHistory(h)
         }
       })
@@ -293,6 +299,11 @@ export default function EvaluationWorkbench({
     }
   }
   async function showReport(id?: number) {
+    if (
+      id === undefined &&
+      (!current || (current.corpus === 'demo' && !showDemo))
+    )
+      return
     const token = ++reportRequest.current
     setReportLoading(true)
     setReport(null)
@@ -348,7 +359,7 @@ export default function EvaluationWorkbench({
       if (alive.current) {
         const next = datasets.filter((d) => d.id !== selected)
         setDatasets(next)
-        setSelected(next[0]?.id || '')
+        setSelected(firstRealDatasetId(next))
         setNotice('测评集已删除')
       }
     } catch (e) {
@@ -402,11 +413,11 @@ export default function EvaluationWorkbench({
         <div>
           <h1>检索与测评</h1>
           <p>
-            核对资料排序，留下可复现的测评记录。检索调试和本地测评无需模型密钥；云端实验需单独配置。
+            核对真实资料的检索排序，留下可复现的测评记录。检索调试和本地测评无需模型密钥。
           </p>
         </div>
       </div>
-      <div className="evaluation-tabs">
+      <nav className="evaluation-tabs" aria-label="测评工作区">
         <button
           aria-pressed={tab === 'preview'}
           onClick={() => setTab('preview')}
@@ -419,13 +430,23 @@ export default function EvaluationWorkbench({
         >
           测评集
         </button>
+      </nav>
+      <details
+        className="evaluation-legacy"
+        open={historyExpanded}
+        onToggle={(event) => setHistoryExpanded(event.currentTarget.open)}
+      >
+        <summary>历史实验（冻结维护）</summary>
+        <p>
+          保留既有实验调用与历史记录。日常检索调试和真实资料测评请使用上方入口。
+        </p>
         <button
           aria-pressed={tab === 'experiments'}
           onClick={() => setTab('experiments')}
         >
           LangSmith 实验
         </button>
-      </div>
+      </details>
       {error && (
         <div role="alert" className="alert error">
           {error}
@@ -499,12 +520,15 @@ export default function EvaluationWorkbench({
                           setNotice('')
                         }}
                       >
-                        {datasets.map((d) => (
-                          <option value={d.id} key={d.id}>
-                            {d.name}（{d.case_count} 题，
-                            {d.corpus === 'demo' ? '合成示例' : '本机资料'}）
-                          </option>
-                        ))}
+                        <option value="">请选择测评集</option>
+                        {datasets
+                          .filter((d) => showDemo || d.corpus === 'live')
+                          .map((d) => (
+                            <option value={d.id} key={d.id}>
+                              {d.name}（{d.case_count} 题，
+                              {d.corpus === 'demo' ? '合成示例' : '本机资料'}）
+                            </option>
+                          ))}
                       </select>
                     </label>
                     <button
@@ -515,6 +539,22 @@ export default function EvaluationWorkbench({
                       运行测评
                     </button>
                   </div>
+                  <DemoDatasetToggle
+                    checked={showDemo}
+                    disabled={busy || !!editor}
+                    onChange={(enabled) => {
+                      setShowDemo(enabled)
+                      if (!enabled && current?.corpus === 'demo') {
+                        datasetRequest.current++
+                        setSelected(firstRealDatasetId(datasets))
+                      }
+                    }}
+                  />
+                  {!firstRealDatasetId(datasets) && (
+                    <p className="evaluation-note">
+                      暂无真实资料测评集。请新建测评集，使用本机资料和人工标签核对检索结果。
+                    </p>
+                  )}
                   {current && <p>{current.description}</p>}
                   <div className="evaluation-actions">
                     <button

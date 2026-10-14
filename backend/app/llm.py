@@ -197,10 +197,12 @@ class LangChainProvider:
             with tracing_context(enabled=False):
                 async with httpx.AsyncClient(timeout=httpx.Timeout(90, connect=15), transport=self.transport,
                                              event_hooks={'response': [_check_embedding_response]}) as client:
+                    # Bailian v3/v4 permit at most 10 inputs per HTTP request, including via gateways.
+                    batch_limit = 10 if self.embedding_model in {'text-embedding-v3', 'text-embedding-v4'} else 64
                     encoder = OpenAIEmbeddings(model=self.embedding_model,
                         base_url=self.embedding_base_url, api_key=self.embedding_api_key or 'local-no-key',
                         openai_api_type='', openai_proxy='', openai_organization='',
-                        check_embedding_ctx_length=False, chunk_size=64, max_retries=0,
+                        check_embedding_ctx_length=False, chunk_size=batch_limit, max_retries=0,
                         request_timeout=90, http_async_client=client,
                         model_kwargs={'encoding_format': 'float'})
                     encoder.async_client = _OrderedEmbeddingClient(encoder.async_client)

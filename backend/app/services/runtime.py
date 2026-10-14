@@ -28,7 +28,7 @@ class Runtime:
     jobs: JobService
 
 
-def build_runtime(database_url=None, storage_dir=None, provider=None, settings_path=None, runtime_settings=None):
+def build_runtime(database_url=None, storage_dir=None, provider=None, settings_path=None, runtime_settings=None, credential_store=None):
     config = read_settings()
     root = Path(__file__).resolve().parents[3]
     storage = Path(storage_dir or config.get('DATA_DIR') or root / 'data' / 'attachments')
@@ -46,11 +46,9 @@ def build_runtime(database_url=None, storage_dir=None, provider=None, settings_p
     private_path = Path(settings_path).resolve() if settings_path is not None else storage.parent / '.modelkb-private-settings.json'
     if private_path == storage or storage in private_path.parents:
         raise ValueError('Private settings must be outside attachment storage')
-    user_settings = PrivateSettings(private_path, env)
-    if provider is None and (runtime_settings is not None or user_settings.data['active_profile_id'] != 'env'):
-        chat.provider = LangChainProvider(user_settings.values())
+    user_settings = PrivateSettings(private_path, env, credentials=credential_store)
     jobs = JobService(engine)
-    experiments = ExperimentService(engine, chat.provider, chat.lock, settings=user_settings.values(), jobs=jobs)
+    experiments = ExperimentService(engine, chat.provider, chat.lock, settings=env, jobs=jobs)
     chat.system_prompt = experiments.system_prompt = compose_prompt(user_settings.data['custom_prompt'])
     return Runtime(engine, storage, backup_limit, chat, experiments, user_settings, jobs)
 
@@ -62,6 +60,13 @@ async def application_lifespan(app):
     try:
         # Startup verifies explicit migrations; requests never create or upgrade tables.
         init_db(state.engine)
+        # System credentials and legacy migration are deferred until managed startup.
+        state.user_settings.initialize()
+        values = state.user_settings.values()
+        if state.configure_saved_provider:
+            state.chat.provider = LangChainProvider(values)
+            state.experiments.provider = state.chat.provider
+        state.experiments.settings = values
         with Session(state.engine) as db:
             backfill(db, missing_only=True)
             db.commit()

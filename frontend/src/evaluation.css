@@ -251,3 +251,28 @@
     font-size: 25px;
   }
 }
+
+.evaluation-legacy {
+  margin: 0 0 22px;
+  padding: 12px 16px;
+  border: 1px solid var(--line, #cbd9dd);
+  border-radius: 4px;
+  color: var(--muted, #61777f);
+}
+.evaluation-legacy summary {
+  cursor: pointer;
+}
+.evaluation-workbench .evaluation-demo-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0;
+  font-size: 12px;
+}
+.evaluation-workbench .evaluation-demo-toggle input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  flex: 0 0 auto;
+}

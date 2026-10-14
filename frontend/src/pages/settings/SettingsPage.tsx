@@ -26,6 +26,18 @@ function editable(profile: ProfileView): ProfileInput {
     max_output_tokens: profile.max_output_tokens,
   }
 }
+const credentialMessages: Record<
+  NonNullable<ProfileView['credential_status']>,
+  string
+> = {
+  environment: '使用只读环境配置。',
+  not_saved: '未保存密钥。',
+  saved_unverified: '密钥已保存，尚未验证系统凭据是否可读取。',
+  available: '系统凭据可读取；服务连接仍需单独测试。',
+  missing: '系统凭据已缺失，请重新输入 API key 并保存。',
+  unavailable: '系统凭据库不可用，请解锁后重试；不会改用明文或环境密钥。',
+  migration_pending: '旧连接密钥尚未安全迁移，请检查系统凭据库并重新启动。',
+}
 export default function SettingsWorkbench() {
   const [settings, setSettings] = useState<SettingsView | null>(null)
   const [selected, setSelected] = useState('')
@@ -259,6 +271,21 @@ export default function SettingsWorkbench() {
                 这是现有环境配置，只读保留。新建连接即可在应用中设置其他服务。
               </p>
             )}
+            {settings.credential_durability_pending && (
+              <p className="settings-note" role="alert">
+                设置已更新，但磁盘持久化确认未完成。两代凭据均已保留；请检查磁盘状态并重新启动以完成确认。
+              </p>
+            )}
+            {settings.credential_cleanup_pending && (
+              <p className="settings-note" role="alert">
+                旧凭据清理尚未完成，已提交的连接配置已保留。请解锁系统凭据库后重新启动，以重试清理。
+              </p>
+            )}
+            {current?.credential_status && (
+              <p className="settings-note" aria-label="凭据状态">
+                {credentialMessages[current.credential_status]}
+              </p>
+            )}
             <form onSubmit={save}>
               <fieldset
                 disabled={busy || !!current?.read_only}
@@ -349,9 +376,11 @@ export default function SettingsWorkbench() {
                     }}
                   />
                   <small>
-                    {current?.has_api_key
-                      ? '已保存密钥。留空保留原密钥，不会回显。'
-                      : '未配置密钥。只在本机服务允许时留空。'}
+                    {current?.read_only && current.has_api_key
+                      ? '密钥来自只读环境配置，不会回显。'
+                      : current?.has_api_key
+                        ? '已保存密钥引用。留空保留原凭据，不会回显；可用状态见上方。'
+                        : '未配置密钥。只在本机服务允许时留空。'}
                   </small>
                 </label>
                 <label className="settings-checkbox">
