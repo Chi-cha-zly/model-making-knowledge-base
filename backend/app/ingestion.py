@@ -86,6 +86,7 @@ def chunk_record(row):
     evidence = image_evidence(row)
     attachments = attachment_hashes(row)
     seen_images = set()
+    body_ocr = {}
     if isinstance(row, Technique):
         summary = current_import_notice(row.summary) if evidence else row.summary
         if summary and summary.startswith('本地 OCR 原文（未经人工核对，可能包含错字'):
@@ -109,7 +110,12 @@ def chunk_record(row):
                 caption = '\n'.join(filter(None,[heading,caption]))
                 sections.append((IMAGE_ORIGINS[2] + '\n' + caption, aid))
             else:
-                sections.append(('\n'.join(filter(None,[heading,block['text']])), None))
+                if heading == IMAGE_ORIGINS[0] and len(attachments) == 1:
+                    aid = next(iter(attachments))
+                    sections.append((IMAGE_ORIGINS[0] + '\n' + block['text'], aid))
+                    body_ocr.setdefault(aid, []).append(block['text'])
+                else:
+                    sections.append(('\n'.join(filter(None,[heading,block['text']])), None))
     else:
         sections.append((readable_excerpt({'属性': row.properties, '类别': row.kind,
                          '别名': [a.alias for a in row.aliases]}), None))
@@ -117,7 +123,10 @@ def chunk_record(row):
         if aid not in seen_images:
             sections.append(('', aid))
         if aid in evidence:
-            sections.extend((part, aid) for part in image_evidence_sections(evidence[aid]))
+            image = evidence[aid]
+            if ''.join(body_ocr.get(aid, [])) == image['ocr_text']:
+                image = {**image, 'ocr_text': ''}
+            sections.extend((part, aid) for part in image_evidence_sections(image))
     chunks = []
     for text, attachment_id in sections:
         origin = next((label for label in IMAGE_ORIGINS if text.startswith(label)), '')

@@ -54,8 +54,10 @@ def test_import_preserves_ocr_image_source_and_is_hash_idempotent(import_target)
         assert image.sources[0].author == '作者'
         blocks = image.content_blocks
         assert all(b['attachment_id'] == image.attachments[0].id for b in blocks if b['type'] == 'image')
-        assert ocr_text in image.summary
-        assert ''.join(b['caption'] for b in blocks if b['type'] == 'image').endswith(ocr_text)
+        assert len(image.summary) < 100
+        assert len([b for b in blocks if b['type'] == 'image']) == 1
+        assert ocr_text == '\n\n'.join(b['text'] for b in blocks if b['type'] == 'paragraph')
+        assert any(b['type'] == 'heading' and 'OCR' in b['text'] for b in blocks)
         assert (storage / image.attachments[0].storage_name).read_bytes() == PNG
     # A renamed byte-identical image is still the same source.
     next(source.glob('*.png')).rename(source / '改名.png')
@@ -134,3 +136,34 @@ def test_cli_dry_run_writes_only_report_and_nonzero_on_failure(tmp_path):
     assert report.exists()
     assert not (tmp_path / 'missing.db').exists()
     assert main([*args, '--apply']) == 1
+
+
+def test_changed_source_during_ocr_is_not_paired_with_original_bytes(import_target):
+    from scripts.import_nmm import import_directory
+    source,engine,storage=import_target
+    path=source/'图.png';path.write_bytes(PNG)
+    def replace(path):
+        path.write_bytes(PNG+b'changed')
+        return '其他图片的OCR'
+    result=import_directory(source,engine.url.render_as_string(hide_password=False),storage,ocr=replace)
+    assert result['counts']['failed']==1
+    with Session(engine) as db:
+        assert db.scalar(select(func.count()).select_from(Technique))==0
+    assert not list(storage.glob('*'))
+
+
+def test_needs_review_import_keeps_one_image_without_indexing_raw_noise(import_target):
+    from scripts.import_nmm import import_directory
+    from app.ingestion_models import Chunk
+    source,engine,storage=import_target
+    (source/'图.png').write_bytes(PNG)
+    class ReviewOCR:
+        def recognize(self,path):
+            return {'text':'','raw_text':'竖排伪字999','status':'needs_review','engine':'test'}
+    result=import_directory(source,engine.url.render_as_string(hide_password=False),storage,ocr=ReviewOCR())
+    assert result['counts']['imported']==1 and result['files'][0]['ocr_status']=='needs_review'
+    with Session(engine) as db:
+        row=db.scalar(select(Technique))
+        assert '待人工核对' in row.summary
+        assert len(row.content_blocks)==1
+        assert all('竖排伪字999' not in c.content for c in db.scalars(select(Chunk)))

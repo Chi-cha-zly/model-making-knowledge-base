@@ -413,7 +413,7 @@ main {
 }
 .workspace {
   display: grid;
-  grid-template-columns: 180px minmax(300px, 1fr) minmax(300px, 380px);
+  grid-template-columns: 180px minmax(0, 1fr);
   gap: 19px;
   align-items: start;
 }
@@ -528,47 +528,6 @@ main {
   padding-top: 9px;
   color: #64848c;
   font-size: 11px;
-}
-.detail-panel {
-  background: #fff;
-  border: 1px solid #dce5e6;
-  min-height: 430px;
-  border-radius: 3px;
-}
-.detail-placeholder {
-  padding: 44px 33px;
-  text-align: center;
-  color: #8a9da3;
-}
-.placeholder-lines {
-  width: 105px;
-  height: 107px;
-  border: 1px solid #d4e0e1;
-  margin: 0 auto 22px;
-  display: flex;
-  flex-direction: column;
-  gap: 11px;
-  padding: 24px 15px;
-  transform: rotate(-5deg);
-}
-.placeholder-lines span {
-  height: 3px;
-  background: #d4e0e1;
-}
-.placeholder-lines span:nth-child(2) {
-  width: 85%;
-}
-.placeholder-lines span:nth-child(3) {
-  width: 60%;
-}
-.detail-placeholder h3 {
-  color: #49616b;
-  font-size: 16px;
-  margin: 0;
-}
-.detail-placeholder p {
-  font-size: 12px;
-  line-height: 1.8;
 }
 .detail-content {
   padding: 25px;
@@ -993,9 +952,6 @@ main {
   .workspace {
     grid-template-columns: 160px minmax(300px, 1fr);
   }
-  .detail-panel {
-    grid-column: 2;
-  }
   .sidebar {
     width: 210px;
   }
@@ -1072,9 +1028,6 @@ main {
   }
   .filter-group button {
     border: 1px solid #dce6e7;
-  }
-  .detail-panel {
-    grid-column: auto;
   }
   .manage-grid {
     grid-template-columns: 1fr;
@@ -1725,4 +1678,152 @@ main {
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--surface);
+}
+
+/* Record details stay inside the viewport, independently of index scroll. */
+.detail-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(12 26 30 / 65%);
+  overscroll-behavior: contain;
+}
+.detail-dialog {
+  width: min(100%, 740px);
+  max-height: calc(100dvh - 48px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--surface, #fff);
+  color: var(--text, #254a55);
+  border-radius: 16px;
+  box-shadow: 0 24px 80px rgb(0 0 0 / 30%);
+}
+.detail-dialog.has-gallery {
+  width: min(100%, 1120px);
+}
+.detail-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+  padding: 10px 16px 10px 24px;
+  border-bottom: 1px solid var(--line, #dce5e7);
+  font-size: 13px;
+  color: var(--muted, #70858d);
+}
+.detail-close,
+.detail-gallery-controls button {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--subtle, #f2f5f5);
+  color: inherit;
+  cursor: pointer;
+}
+.detail-dialog button:focus-visible,
+.detail-dialog a:focus-visible,
+.upload-inline:focus-within {
+  outline: 2px solid var(--accent, #3b7180);
+  outline-offset: 3px;
+}
+.detail-dialog-body {
+  display: grid;
+  min-height: 0;
+  overflow: hidden;
+}
+.has-gallery .detail-dialog-body {
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+}
+.detail-reading {
+  min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.detail-gallery {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--subtle, #f2f5f5);
+  border-right: 1px solid var(--line, #dce5e7);
+  padding: 20px;
+}
+.detail-gallery-image {
+  display: grid;
+  place-items: center;
+  min-height: 200px;
+  flex: 1;
+}
+.detail-gallery-image img {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100dvh - 250px);
+  object-fit: contain;
+}
+.detail-gallery-controls {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  font-size: 12px;
+}
+.detail-gallery-controls button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.detail-gallery-controls a {
+  margin-left: auto;
+}
+.detail-gallery-caption {
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+  overflow-wrap: anywhere;
+  margin: 10px 0 0;
+}
+.detail-reading .alert {
+  margin: 16px 24px 0;
+}
+@media (max-width: 700px) {
+  .detail-overlay {
+    padding: 10px;
+  }
+  .detail-dialog {
+    max-height: calc(100dvh - 20px);
+    border-radius: 12px;
+  }
+  .detail-dialog-body,
+  .has-gallery .detail-dialog-body {
+    display: block;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .detail-reading,
+  .detail-gallery {
+    overflow: visible;
+  }
+  .detail-gallery {
+    border-right: 0;
+    border-bottom: 1px solid var(--line, #dce5e7);
+    padding: 16px;
+  }
+  .detail-gallery-image {
+    min-height: 140px;
+  }
+  .detail-gallery-image img {
+    max-height: 42dvh;
+  }
+  .detail-dialog .detail-content {
+    padding: 20px;
+  }
 }

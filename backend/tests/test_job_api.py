@@ -49,3 +49,20 @@ def test_jobs_submission_obeys_restore_lifecycle_lock(tmp_path):
         worker.join(3)
         assert not worker.is_alive()
         assert responses[0].status_code == 202
+
+
+def test_vision_job_honors_explicit_local_ocr_engine(tmp_path,monkeypatch):
+    import app.vision_jobs
+    import app.services.ocr
+    class VisionProvider(JobProvider):
+        vision_configured=True
+        settings={'OCR_ENGINE':'tesseract','OCR_TESSDATA_DIR':'/local/languages'}
+    selected=[]
+    monkeypatch.setattr(app.services.ocr,'local_ocr',lambda **kw:selected.append(kw) or object())
+    async def describe(*a,**kw): return {'documents':[],'status':'completed'}
+    monkeypatch.setattr(app.vision_jobs,'describe_pending',describe)
+    app=setup(tmp_path,VisionProvider())
+    with TestClient(app) as client:
+        assert client.post('/api/v1/jobs',json={'kind':'vision','request_id':'explicit-ocr','apply':True}).status_code==202
+        client.portal.call(asyncio.sleep,.05)
+    assert selected==[{'engine':'tesseract','tessdata_dir':'/local/languages'}]

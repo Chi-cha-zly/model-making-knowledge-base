@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef } from 'react'
 import {
   BookOpenText,
   Box,
@@ -8,11 +9,16 @@ import {
 } from 'lucide-react'
 import { api, type Product, type Technique } from '../../api'
 import Detail from './Detail'
+import DetailDialog from './DetailDialog'
 import { formatError } from './types'
 import type { LibraryController } from './useLibrary'
 const categories = ['全部', '素组', '涂装', '横向主题']
 export default function BrowsePage({
   sources,
+  techniques,
+  products,
+  error,
+  notice,
   results,
   query,
   setQuery,
@@ -33,13 +39,22 @@ export default function BrowsePage({
   search,
   setResults,
   setSubmittedQuery,
-  setBusy,
+  setUploading,
   setError,
   setSelected,
   setImage,
   refresh,
+  updateRecord,
   setNotice,
 }: LibraryController) {
+  // Closing, switching records or leaving this page ends the viewing session.
+  const detailSession = useRef(0)
+  useLayoutEffect(() => {
+    detailSession.current += 1
+    return () => {
+      detailSession.current += 1
+    }
+  }, [selected])
   return (
     <>
       <section className="hero">
@@ -212,58 +227,74 @@ export default function BrowsePage({
             </div>
           )}
         </section>
-        <aside className="detail-panel" role="region" aria-label="资料详情">
-          {selected ? (
-            <Detail
-              entry={selected}
-              sources={sources}
-              image={image}
-              busy={busy}
-              onWithdraw={() => {
-                if (selected.type === 'technique')
-                  void changeTechniqueStatus(selected.item as Technique, false)
-              }}
-              onEdit={() =>
-                openEditor({ type: selected.type, id: selected.item.id })
-              }
-              onImage={async (file) => {
-                setBusy(true)
-                setError('')
-                try {
-                  const result = await api.uploadImage(file)
-                  const ids = [
-                    ...(selected.item.attachment_ids || []),
-                    result.id,
-                  ]
-                  const updated = await api.attachImage(
-                    selected.type,
-                    selected.item.id,
-                    ids,
-                  )
-                  setSelected({ type: selected.type, item: updated })
-                  setImage({ name: result.filename, url: result.url })
-                  await refresh()
-                  setNotice('图片已附加到资料')
-                } catch (err) {
-                  setError(formatError(err))
-                } finally {
-                  setBusy(false)
-                }
-              }}
-            />
-          ) : (
-            <div className="detail-placeholder">
-              <div className="placeholder-lines">
-                <span />
-                <span />
-                <span />
-              </div>
-              <h3>选择一条资料</h3>
-              <p>在这里查看步骤、产品编号与原始出处。</p>
+      </div>
+      {selected && (
+        <DetailDialog
+          key={`${selected.type}-${selected.item.id}`}
+          entry={selected}
+          onClose={() => setSelected(null)}
+        >
+          {error && (
+            <div className="alert error" role="alert">
+              {error}
             </div>
           )}
-        </aside>
-      </div>
+          {notice && (
+            <div className="alert success" role="status">
+              {notice}
+            </div>
+          )}
+          <Detail
+            entry={selected}
+            sources={sources}
+            image={image}
+            busy={busy}
+            onWithdraw={() => {
+              if (selected.type === 'technique')
+                void changeTechniqueStatus(selected.item as Technique, false)
+            }}
+            onEdit={() =>
+              openEditor({ type: selected.type, id: selected.item.id })
+            }
+            onImage={async (file) => {
+              const session = detailSession.current
+              setUploading(true)
+              setError('')
+              try {
+                const result = await api.uploadImage(file)
+                // A reopened viewer may have an older snapshot than the refreshed catalogue.
+                const record =
+                  (selected.type === 'technique' ? techniques : products).find(
+                    (item) => item.id === selected.item.id,
+                  ) || selected.item
+                const ids = [
+                  ...new Set([...(record.attachment_ids || []), result.id]),
+                ]
+                const updated = await api.attachImage(
+                  selected.type,
+                  selected.item.id,
+                  ids,
+                )
+                await updateRecord(selected.type, updated)
+                if (detailSession.current === session) {
+                  setSelected((current) =>
+                    current === selected
+                      ? { type: selected.type, item: updated }
+                      : current,
+                  )
+                  setImage({ name: result.filename, url: result.url })
+                }
+                await refresh()
+                setNotice('图片已附加到资料')
+              } catch (err) {
+                setError(formatError(err))
+              } finally {
+                setUploading(false)
+              }
+            }}
+          />
+        </DetailDialog>
+      )}
     </>
   )
 }

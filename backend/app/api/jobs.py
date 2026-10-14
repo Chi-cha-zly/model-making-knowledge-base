@@ -53,10 +53,11 @@ async def start(data: IngestionTask, request: Request):
             result = await embed_pending(state.engine, provider, apply=True, max_documents=data.max_documents, progress=context.progress)
         else:
             from ..vision_jobs import describe_pending
-            from ..services.ocr import TesseractOCR
+            from ..services.ocr import local_ocr
             result = await describe_pending(state.engine, provider, state.storage,
                                             apply=True, max_documents=data.max_documents, progress=context.progress,
-                                            ocr=TesseractOCR(tessdata_dir=getattr(provider, 'settings', {}).get('OCR_TESSDATA_DIR')))
+                                            ocr=local_ocr(engine=getattr(provider, 'settings', {}).get('OCR_ENGINE', 'vision'),
+                                                          tessdata_dir=getattr(provider, 'settings', {}).get('OCR_TESSDATA_DIR')))
         documents = result.get('documents', [])
         context.progress(len(documents), len(documents))
         if any(item.get('status') == 'failed' for item in documents):

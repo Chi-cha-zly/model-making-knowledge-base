@@ -1,5 +1,6 @@
 import {
   cleanup,
+  fireEvent,
   render,
   screen,
   waitFor,
@@ -563,4 +564,292 @@ it('withdraws a published technique and edits it without republishing until expl
   expect(
     await screen.findByRole('button', { name: /喷涂底漆前的表面清理/ }),
   ).toBeInTheDocument()
+})
+
+it('opens record details as a modal, locks the page and restores focus and scroll on Escape', async () => {
+  const user = userEvent.setup()
+  const scrollTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+  vi.stubGlobal('scrollY', 1200)
+  render(<App />)
+  const trigger = await screen.findByRole('button', {
+    name: /喷涂底漆前的表面清理/,
+  })
+  await user.click(trigger)
+  const dialog = screen.getByRole('dialog', { name: '资料详情' })
+  expect(dialog).toHaveAttribute('aria-modal', 'true')
+  expect(document.body.style.position).toBe('fixed')
+  expect(document.body.style.top).toBe('-1200px')
+  const close = within(dialog).getByRole('button', { name: '关闭资料详情' })
+  expect(close).toHaveFocus()
+  expect(
+    screen.queryByRole('navigation', { name: '主导航' }),
+  ).not.toBeInTheDocument()
+  await user.keyboard('{Escape}')
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  expect(trigger).toHaveFocus()
+  expect(document.body.style.position).toBe('')
+  expect(scrollTo).toHaveBeenLastCalledWith(0, 1200)
+  scrollTo.mockRestore()
+})
+
+it('keeps keyboard focus in the detail dialog and supports close button and backdrop', async () => {
+  const user = userEvent.setup()
+  render(<App />)
+  const trigger = await screen.findByRole('button', {
+    name: /喷涂底漆前的表面清理/,
+  })
+  await user.click(trigger)
+  const dialog = screen.getByRole('dialog', { name: '资料详情' })
+  const close = within(dialog).getByRole('button', { name: '关闭资料详情' })
+  await user.tab({ shift: true })
+  expect(within(dialog).getByLabelText('上传图片')).toHaveFocus()
+  await user.tab()
+  expect(close).toHaveFocus()
+  await user.click(within(dialog).getByText('清洗部件'))
+  expect(dialog).toBeInTheDocument()
+  await user.click(close)
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  await user.click(trigger)
+  const reopened = screen.getByRole('dialog', { name: '资料详情' })
+  await user.click(reopened.parentElement!)
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  expect(trigger).toHaveFocus()
+})
+
+it('browses original images in the detail modal without leaving the record', async () => {
+  const previous = vi.mocked(fetch).getMockImplementation()!
+  vi.mocked(fetch).mockImplementation((input, init) =>
+    String(input).endsWith('/techniques')
+      ? response([
+          {
+            ...technique,
+            attachment_ids: [8, 9],
+            content_blocks: [
+              { type: 'image', attachment_id: 8, caption: '底漆表面' },
+              { type: 'paragraph', text: '图后说明' },
+              { type: 'image', attachment_id: 9, caption: '打磨后效果' },
+            ],
+          },
+        ])
+      : previous(input, init),
+  )
+  const user = userEvent.setup()
+  render(<App />)
+  await user.click(
+    await screen.findByRole('button', { name: /喷涂底漆前的表面清理/ }),
+  )
+  const dialog = screen.getByRole('dialog', { name: '资料详情' })
+  expect(within(dialog).getByRole('img', { name: '底漆表面' })).toHaveAttribute(
+    'src',
+    '/api/v1/attachments/8',
+  )
+  await user.click(within(dialog).getByRole('button', { name: '下一张图片' }))
+  expect(
+    within(dialog).getByRole('img', { name: '打磨后效果' }),
+  ).toHaveAttribute('src', '/api/v1/attachments/9')
+  expect(within(dialog).getByText('图后说明')).toBeInTheDocument()
+  expect(
+    within(dialog).getByRole('link', { name: /郡是涂料官方说明/ }),
+  ).toHaveAttribute('href', source.url)
+})
+
+it('does not reopen details when an attachment upload finishes after closing', async () => {
+  let completeUpload!: (response: Response) => void
+  const previous = vi.mocked(fetch).getMockImplementation()!
+  vi.mocked(fetch).mockImplementation((input, init) =>
+    String(input).endsWith('/attachments') && init?.method === 'POST'
+      ? new Promise<Response>((resolve) => {
+          completeUpload = resolve
+        })
+      : previous(input, init),
+  )
+  const user = userEvent.setup()
+  render(<App />)
+  await user.click(
+    await screen.findByRole('button', { name: /喷涂底漆前的表面清理/ }),
+  )
+  await user.upload(
+    screen.getByLabelText('上传图片'),
+    new File(['image'], 'photo.png', { type: 'image/png' }),
+  )
+  await user.click(screen.getByRole('button', { name: '关闭资料详情' }))
+  completeUpload(
+    new Response(
+      JSON.stringify({
+        id: 8,
+        filename: 'photo.png',
+        url: '/api/v1/attachments/8',
+      }),
+      { status: 201, headers: { 'Content-Type': 'application/json' } },
+    ),
+  )
+  expect(await screen.findByText('图片已附加到资料')).toBeInTheDocument()
+  expect(
+    screen.queryByRole('dialog', { name: '资料详情' }),
+  ).not.toBeInTheDocument()
+  expect(document.body.style.position).toBe('')
+})
+
+it('blocks editing through details and management until an attachment upload and catalogue refresh finish', async () => {
+  let finishUpload!: (response: Response) => void
+  let current = { ...technique, attachment_ids: [] as number[] }
+  const previous = vi.mocked(fetch).getMockImplementation()!
+  vi.mocked(fetch).mockImplementation((input, init) => {
+    const url = String(input)
+    if (url.endsWith('/attachments') && init?.method === 'POST')
+      return new Promise<Response>((resolve) => {
+        finishUpload = resolve
+      })
+    if (url.endsWith('/techniques/2') && init?.method === 'PATCH') {
+      current = { ...current, ...JSON.parse(String(init.body)) }
+      return response(current)
+    }
+    if (url.endsWith('/techniques')) return response([current])
+    return previous(input, init)
+  })
+  const user = userEvent.setup()
+  render(<App />)
+  await user.click(
+    await screen.findByRole('button', { name: /喷涂底漆前的表面清理/ }),
+  )
+  await user.upload(
+    screen.getByLabelText('上传图片'),
+    new File(['image'], 'pending.png', { type: 'image/png' }),
+  )
+  expect(screen.getByRole('button', { name: '编辑' })).toBeDisabled()
+  await user.click(screen.getByRole('button', { name: '关闭资料详情' }))
+  await user.type(screen.getByRole('searchbox', { name: '搜索资料' }), '底漆')
+  fireEvent.submit(
+    screen.getByRole('searchbox', { name: '搜索资料' }).closest('form')!,
+  )
+  await screen.findByText('“底漆”的检索结果')
+  await waitFor(() =>
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.some(([url]) => String(url).includes('/search')),
+    ).toBe(true),
+  )
+  await user.click(screen.getByRole('button', { name: '资料管理' }))
+  const edit = screen.getByRole('button', {
+    name: `编辑技巧${technique.title}`,
+  })
+  expect(edit).toBeDisabled()
+  await user.click(edit)
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  finishUpload(
+    new Response(
+      JSON.stringify({
+        id: 8,
+        filename: 'pending.png',
+        url: '/api/v1/attachments/8',
+      }),
+    ),
+  )
+  await screen.findByText('图片已附加到资料')
+  await user.click(
+    screen.getByRole('button', { name: `编辑技巧${technique.title}` }),
+  )
+  await user.click(
+    within(screen.getByRole('dialog', { name: '编辑技巧' })).getByRole(
+      'button',
+      { name: '保存技巧' },
+    ),
+  )
+  await screen.findByText('已保存技巧')
+  expect(current.attachment_ids).toEqual([8])
+})
+
+it('does not replace a reopened record with the previous detail session upload response', async () => {
+  let finishUpload!: (response: Response) => void
+  const previous = vi.mocked(fetch).getMockImplementation()!
+  vi.mocked(fetch).mockImplementation((input, init) => {
+    const url = String(input)
+    if (url.endsWith('/attachments') && init?.method === 'POST')
+      return new Promise<Response>((resolve) => {
+        finishUpload = resolve
+      })
+    if (url.endsWith('/techniques/2') && init?.method === 'PATCH')
+      return response({
+        ...technique,
+        title: '旧会话响应',
+        attachment_ids: [8],
+      })
+    return previous(input, init)
+  })
+  const user = userEvent.setup()
+  render(<App />)
+  const trigger = await screen.findByRole('button', {
+    name: /喷涂底漆前的表面清理/,
+  })
+  await user.click(trigger)
+  await user.upload(
+    screen.getByLabelText('上传图片'),
+    new File(['image'], 'pending.png', { type: 'image/png' }),
+  )
+  await user.click(screen.getByRole('button', { name: '关闭资料详情' }))
+  await user.click(trigger)
+  finishUpload(
+    new Response(
+      JSON.stringify({
+        id: 8,
+        filename: 'pending.png',
+        url: '/api/v1/attachments/8',
+      }),
+    ),
+  )
+  await screen.findByText('图片已附加到资料')
+  const dialog = screen.getByRole('dialog', { name: '资料详情' })
+  expect(
+    within(dialog).getByRole('heading', { name: technique.title }),
+  ).toBeInTheDocument()
+  expect(within(dialog).queryByText('旧会话响应')).not.toBeInTheDocument()
+  expect(within(dialog).queryByText('pending.png')).not.toBeInTheDocument()
+})
+
+it('keeps the attached image in the editor if refreshing the catalogue fails', async () => {
+  let current = { ...technique, attachment_ids: [] as number[] }
+  let failRefresh = false
+  const previous = vi.mocked(fetch).getMockImplementation()!
+  vi.mocked(fetch).mockImplementation((input, init) => {
+    const url = String(input)
+    if (url.endsWith('/techniques/2') && init?.method === 'PATCH') {
+      current = { ...current, ...JSON.parse(String(init.body)) }
+      failRefresh = true
+      return response(current)
+    }
+    if (url.endsWith('/techniques')) {
+      if (failRefresh) {
+        failRefresh = false
+        return response({ detail: '刷新失败' }, 503)
+      }
+      return response([current])
+    }
+    return previous(input, init)
+  })
+  const user = userEvent.setup()
+  render(<App />)
+  await user.click(
+    await screen.findByRole('button', { name: /喷涂底漆前的表面清理/ }),
+  )
+  await user.upload(
+    screen.getByLabelText('上传图片'),
+    new File(['image'], 'attached.png', { type: 'image/png' }),
+  )
+  await screen.findByText('刷新失败')
+  await user.click(screen.getByRole('button', { name: '编辑' }))
+  await user.click(
+    within(screen.getByRole('dialog', { name: '编辑技巧' })).getByRole(
+      'button',
+      { name: '保存技巧' },
+    ),
+  )
+  await waitFor(() =>
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(([, init]) => init?.method === 'PATCH'),
+    ).toHaveLength(2),
+  )
+  expect(current.attachment_ids).toEqual([8])
 })

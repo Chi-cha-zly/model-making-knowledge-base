@@ -214,7 +214,7 @@ function Workbench() {
           </div>
         </header>
         <main>
-          {error && (
+          {error && !(library.selected && mode === 'browse') && (
             <div className="alert error" role="alert">
               <span>{error}</span>
               <button aria-label="关闭错误" onClick={() => setError('')}>
@@ -222,7 +222,7 @@ function Workbench() {
               </button>
             </div>
           )}
-          {notice && (
+          {notice && !(library.selected && mode === 'browse') && (
             <div className="alert success" role="status">
               <Check size={17} />
               <span>{notice}</span>

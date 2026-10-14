@@ -11,7 +11,7 @@ from .embedding_jobs import _visible
 from .ingestion import ingest_record
 from .ingestion_models import Chunk, Document, DocumentSource
 from .models import Attachment, Product, Source, Technique
-from .services.ocr import TesseractOCR
+from .services.ocr import local_ocr, recognize_local
 from .vision_models import ImageAnalysis, ImageDescription
 
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
@@ -116,7 +116,7 @@ async def describe_pending(engine, provider, storage, *, apply=False, max_docume
     targets = _plan(engine, model, max_documents)
     result = {'status': ('completed' if apply else 'dry_run') if configured else 'unconfigured',
               'dry_run': not apply, 'configured': configured, 'documents': []}
-    recognizer = ocr or TesseractOCR()
+    recognizer = ocr or local_ocr()
     for index, attachment_id in enumerate(targets):
         with Session(engine) as db:
             attachment = db.get(Attachment, attachment_id)
@@ -134,7 +134,9 @@ async def describe_pending(engine, provider, storage, *, apply=False, max_docume
                 path, image = _read_image(storage, identity)
                 # OCR is a local subprocess. Neither it nor the network request
                 # holds a SQLAlchemy transaction or blocks the asyncio loop.
-                ocr_text = await asyncio.to_thread(recognizer, path)
+                recognized = await asyncio.to_thread(recognize_local, recognizer, path)
+                ocr_text = recognized['text']
+                item['ocr_status'] = recognized['status']
                 if not isinstance(ocr_text, str) or len(ocr_text) > 100000:
                     raise ValueError('Invalid OCR output')
                 ocr_text = ocr_text.strip()

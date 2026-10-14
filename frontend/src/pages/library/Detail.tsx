@@ -28,7 +28,7 @@ export default function Detail({
         <span className="detail-type">
           {technique ? '制作技巧' : '产品档案'}
         </span>
-        <button className="detail-edit" onClick={onEdit}>
+        <button className="detail-edit" disabled={busy} onClick={onEdit}>
           编辑
         </button>
         {technique?.status === 'published' && (
@@ -52,7 +52,15 @@ export default function Detail({
         <>
           <p className="detail-summary">{technique.summary || '暂无摘要'}</p>
           <div className="detail-section">
-            <ArticleBody blocks={technique.content_blocks} />
+            <ArticleBody
+              blocks={technique.content_blocks.flatMap((block) =>
+                block.type === 'image'
+                  ? block.caption
+                    ? [{ type: 'paragraph' as const, text: block.caption }]
+                    : []
+                  : [block],
+              )}
+            />
           </div>
           {technique.tags.length > 0 && (
             <div className="tag-list">
@@ -135,6 +143,7 @@ export default function Detail({
           上传图片
           <input
             type="file"
+            disabled={busy}
             accept="image/png,image/jpeg,image/webp"
             onChange={(event) => {
               const file = event.target.files?.[0]

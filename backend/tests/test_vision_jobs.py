@@ -238,3 +238,18 @@ def test_vision_cli_requires_target_and_defaults_to_dry_run(tmp_path, capsys):
     result = json.loads(capsys.readouterr().out)
     assert code == 0 and result['status'] == 'dry_run' and result['documents'][0]['status'] == 'planned'
     assert state(engine) == before
+
+
+def test_vision_quality_review_is_reported_without_blocking_vlm_or_indexing_raw(tmp_path):
+    from app.vision_jobs import describe_pending
+    engine,storage=seed(tmp_path)
+    class Review:
+        def recognize(self,path): return {'text':'','status':'needs_review','raw_text':'unreadable-noise','engine':'test'}
+    provider=Provider()
+    result=asyncio.run(describe_pending(engine,provider,storage,apply=True,ocr=Review()))
+    assert result['documents'][0]['status']=='ready'
+    assert result['documents'][0]['ocr_status']=='needs_review' and provider.calls==1
+    with Session(engine) as db:
+        assert db.get(ImageAnalysis,1).ocr_text==''
+        assert db.get(ImageAnalysis,1).description==DESCRIPTION
+        assert all('unreadable-noise' not in c.content for c in db.scalars(select(Chunk)))

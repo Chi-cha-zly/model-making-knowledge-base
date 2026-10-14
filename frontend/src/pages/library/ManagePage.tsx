@@ -113,6 +113,7 @@ export default function ManagePage({
               <button
                 className="source-action"
                 aria-label={`编辑技巧${item.title}`}
+                disabled={busy}
                 onClick={() => openEditor({ type: 'technique', id: item.id })}
               >
                 编辑

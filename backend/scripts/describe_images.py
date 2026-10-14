@@ -6,7 +6,7 @@ import os
 
 from app.db import create_db_engine, init_db
 from app.llm import LangChainProvider
-from app.services.ocr import TesseractOCR
+from app.services.ocr import local_ocr
 from app.vision_jobs import describe_pending
 
 
@@ -17,6 +17,7 @@ def main(argv=None, *, environ=None):
     parser.add_argument('--apply', action='store_true', help='Run local OCR and send eligible images to the configured vision endpoint')
     parser.add_argument('--max-documents', type=int, choices=range(1, 101), default=20, metavar='1..100',
                         help='Maximum image targets, including their linked documents')
+    parser.add_argument('--ocr-engine', choices=['vision','tesseract'], default='vision')
     parser.add_argument('--tessdata-dir', help='Local Tesseract language data directory')
     parser.add_argument('--languages', default='chi_sim+eng', help='Installed Tesseract languages')
     args = parser.parse_args(argv)
@@ -28,7 +29,7 @@ def main(argv=None, *, environ=None):
         init_db(engine)
         result = asyncio.run(describe_pending(engine, LangChainProvider(settings=settings), args.storage_dir,
             apply=args.apply, max_documents=args.max_documents,
-            ocr=TesseractOCR(languages=args.languages, tessdata_dir=args.tessdata_dir)))
+            ocr=local_ocr(engine=args.ocr_engine, languages=args.languages, tessdata_dir=args.tessdata_dir)))
     except Exception:
         result = {'status': 'failed', 'error': '图片任务未完成；请检查数据库迁移、附件目录及模型和 OCR 配置。'}
     finally:

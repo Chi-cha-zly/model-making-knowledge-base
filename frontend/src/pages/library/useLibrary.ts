@@ -11,8 +11,15 @@ import {
 } from './types'
 import { useCatalogue } from './useCatalogue'
 export function useLibrary(mode: string, setMode: (mode: string) => void) {
-  const { sources, techniques, products, loading, loadError, refresh } =
-    useCatalogue()
+  const {
+    sources,
+    techniques,
+    products,
+    loading,
+    loadError,
+    refresh,
+    updateRecord,
+  } = useCatalogue()
   const [results, setResults] = useState<SearchResult | null>(null)
   const [query, setQuery] = useState('')
   const [submittedQuery, setSubmittedQuery] = useState('')
@@ -20,7 +27,9 @@ export function useLibrary(mode: string, setMode: (mode: string) => void) {
   const [category, setCategory] = useState('全部')
   const [selected, setSelected] = useState<Entry | null>(null)
   const [editor, setEditor] = useState<Editor>(null)
-  const [busy, setBusy] = useState(false)
+  const [operationBusy, setBusy] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const busy = operationBusy || uploading
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [image, setImage] = useState<{ name: string; url: string } | null>(null)
@@ -89,6 +98,7 @@ export function useLibrary(mode: string, setMode: (mode: string) => void) {
   }, [visibleRecords, filter, category, results])
 
   function openEditor(next: Editor) {
+    if (busy) return
     setEditor(next)
     setSelected(null)
     setError('')
@@ -294,10 +304,12 @@ export function useLibrary(mode: string, setMode: (mode: string) => void) {
     setResults,
     setSubmittedQuery,
     setBusy,
+    setUploading,
     setError,
     setSelected,
     setImage,
     refresh,
+    updateRecord,
     setNotice,
     editor,
     setEditor,

@@ -216,22 +216,6 @@
   border-top: 1px solid var(--line);
   color: var(--muted);
 }
-:root[data-theme='dark'] .detail-panel {
-  background: var(--surface);
-  border: 1px solid var(--line);
-}
-:root[data-theme='dark'] .detail-placeholder {
-  color: var(--muted);
-}
-:root[data-theme='dark'] .placeholder-lines {
-  border: 1px solid var(--line);
-}
-:root[data-theme='dark'] .placeholder-lines span {
-  background: var(--subtle);
-}
-:root[data-theme='dark'] .detail-placeholder h3 {
-  color: var(--muted);
-}
 :root[data-theme='dark'] .detail-type {
   color: var(--muted);
 }
