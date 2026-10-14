@@ -37,7 +37,7 @@ def _snapshot(db, document_id, version):
 def _publish(engine, document_id, version, targets, vectors, model, *, failed=False):
     """Compare-and-write the entire document; no transaction spans an HTTP request."""
     with Session(engine) as db, db.begin():
-        # This no-op conditional update also acquires SQLite's write lock before rereading.
+        # Lock and recheck the document version before publishing the complete batch.
         matched = db.execute(update(Document).where(Document.id == document_id,
             Document.active_version == version, _visible()).values(active_version=version))
         if matched.rowcount != 1:
@@ -64,7 +64,7 @@ def _publish(engine, document_id, version, targets, vectors, model, *, failed=Fa
         return True
 
 
-async def embed_pending(engine, provider, *, apply=False, batch_size=32, max_documents=20):
+async def embed_pending(engine, provider, *, apply=False, batch_size=32, max_documents=20, progress=None):
     """Plan by default; --apply callers explicitly authorize the outbound text requests."""
     if type(batch_size) is not int or not 1 <= batch_size <= 64:
         raise ValueError('batch_size must be between 1 and 64')
@@ -78,7 +78,9 @@ async def embed_pending(engine, provider, *, apply=False, batch_size=32, max_doc
               'configured': provider.embedding_configured, 'documents': []}
     if not provider.embedding_configured:
         result['status'] = 'unconfigured'
-    for document_id, version in documents:
+    if progress:
+        progress(0, len(documents))
+    for completed, (document_id, version) in enumerate(documents, 1):
         with Session(engine) as db:
             snapshot = _snapshot(db, document_id, version)
             targets = [(e.id, _embedding_text(c), e.content_hash, c.content) for e, c in snapshot if e.status in PENDING]
@@ -87,8 +89,12 @@ async def embed_pending(engine, provider, *, apply=False, batch_size=32, max_doc
         result['documents'].append(item)
         if not targets:
             item['status'] = 'stale'
+            if progress:
+                progress(completed, len(documents))
             continue
         if not apply or not provider.embedding_configured:
+            if progress:
+                progress(completed, len(documents))
             continue
         try:
             if len(snapshot) > MAX_CHUNKS_PER_DOCUMENT:
@@ -110,6 +116,8 @@ async def embed_pending(engine, provider, *, apply=False, batch_size=32, max_doc
                 validate_vectors(vectors, len(targets))
                 if _publish(engine, document_id, version, targets, vectors, provider.embedding_model):
                     item['status'] = 'ready'
+                    if progress:
+                        progress(completed, len(documents))
                     continue
             item['status'] = 'stale'
         except Exception as exc:
@@ -117,4 +125,6 @@ async def embed_pending(engine, provider, *, apply=False, batch_size=32, max_doc
             item['error'] = str(exc) if isinstance(exc, ProviderError) else '向量任务失败；未发布部分结果，请检查配置后重试。'
             _publish(engine, document_id, version, targets, [], provider.embedding_model, failed=True)
             result['status'] = 'partial_failure'
+        if progress:
+            progress(completed, len(documents))
     return result

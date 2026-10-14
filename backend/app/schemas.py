@@ -30,10 +30,10 @@ class SourcePatch(BaseModel):
 
 
 class TechniqueInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     title: str = Field(min_length=1, max_length=300)
     category: str | None = None
     summary: str | None = None
-    steps: list[str] = Field(default_factory=list)
     content_blocks: ContentBlocks = Field(default_factory=list)
     prerequisites: str | None = None
     risks: str | None = None
@@ -59,7 +59,6 @@ class TechniquePatch(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=300)
     category: str | None = None
     summary: str | None = None
-    steps: list[str] | None = None
     content_blocks: ContentBlocks = Field(default_factory=list)
     prerequisites: str | None = None
     risks: str | None = None

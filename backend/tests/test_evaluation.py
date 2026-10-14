@@ -1,3 +1,4 @@
+from pg_test_support import test_database_url
 import copy
 import json
 import math
@@ -12,7 +13,7 @@ API = '/api/v1'
 
 @pytest.fixture
 def client(tmp_path):
-    with TestClient(create_app(f"sqlite:///{tmp_path / 'test.db'}", tmp_path / 'uploads')) as c:
+    with TestClient(create_app(test_database_url(f"{tmp_path / 'test.db'}"), tmp_path / 'uploads')) as c:
         yield c
 
 def dataset(client, judgments=None):
@@ -91,7 +92,7 @@ def test_import_byte_limit_and_missing_judgment(client):
 
 def test_preview_live_source_withdrawal_and_immutable_report(client):
     s = client.post(API+'/sources',json={'title':'manual'}).json()['id']
-    t = client.post(API+'/techniques',json={'title':'打磨','steps':['先用砂纸去除痕迹'],'source_ids':[s]}).json()['id']
+    t = client.post(API+'/techniques',json={'title':'打磨','content_blocks': [{'type': 'paragraph', 'text': t} for t in ['先用砂纸去除痕迹']],'source_ids':[s]}).json()['id']
     d = dataset(client,[{'key':f'technique:{t}','grade':3}])
     r = client.post(API+'/evaluations/runs',json={'dataset_id':d['id']}).json()
     assert r['corpus_size'] == 1
@@ -105,8 +106,8 @@ def test_v3_backup_and_old_backup_preservation_and_atomic_validation(client):
     d = dataset(client)
     r = client.post(API+'/evaluations/runs',json={'dataset_id':d['id']}).json()
     data = manifest(client)
-    assert data['version'] == 5
-    for version in [1,2,3,4,5]:
+    assert data['version'] == 6
+    for version in [1,2,3,4,5,6]:
         restored = copy.deepcopy(data)
         restored['version'] = version
         if version < 3:
@@ -163,7 +164,7 @@ def test_backup_into_fresh_database_restores_demo_and_custom_reports(client,tmp_
     a = client.post(API+'/evaluations/runs',json={'dataset_id':custom['id']}).json()
     b = client.post(API+'/evaluations/runs',json={'dataset_id':'demo-v1'}).json()
     raw = client.get(API+'/backup').content
-    url = f"sqlite:///{tmp_path / 'fresh.db'}"
+    url = test_database_url(f"{tmp_path / 'fresh.db'}")
     directory = tmp_path/'fresh-uploads'
     with TestClient(create_app(url,directory)) as other:
         restored=other.post(API+'/backup',files={'file':('backup.zip',raw,'application/zip')})

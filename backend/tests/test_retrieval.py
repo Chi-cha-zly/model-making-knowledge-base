@@ -1,3 +1,4 @@
+from pg_test_support import test_database_url
 """Behavior checks for shared local retrieval, independent of model providers."""
 import json
 import pytest
@@ -79,8 +80,7 @@ def test_frozen_baseline_keeps_v2_bigram_and_substring_scoring():
 
 
 def test_live_permission_filter_source_redaction_and_withdrawal():
-    engine = create_engine('sqlite://')
-    Base.metadata.create_all(engine)
+    engine = create_engine(test_database_url(''))
     with Session(engine) as db:
         source = Source(title='本地证据')
         foreign = Source(title='私密证据', owner_id='other')
@@ -102,17 +102,17 @@ def test_live_permission_filter_source_redaction_and_withdrawal():
 
 
 def test_chat_uses_shared_ranker_readable_evidence_and_existing_budget():
-    engine = create_engine('sqlite://')
-    Base.metadata.create_all(engine)
+    engine = create_engine(test_database_url(''))
     with Session(engine) as db:
         source = Source(title='证据')
         db.add_all([Technique(title=f'喷笔清洁 {i}', summary='清洁 ' * 2500,
-                             steps=[{'操作': '拆卸', '确认': False, '数量': 0}], sources=[source]) for i in range(9)])
+                             content_blocks=[{'type':'paragraph','text':'操作：拆卸\n确认：否\n数量：0'}], sources=[source]) for i in range(9)])
         db.commit()
         citations = evidence(db, ('我想知道更多。' * 2000) + 'airbrush')
         assert 1 <= len(citations) <= 6
         assert sum(len(json.dumps(c, ensure_ascii=False)) for c in citations) <= 24000
-        assert all(set(c) == {'type', 'id', 'title', 'source_ids', 'sources', 'excerpt'} for c in citations)
+        assert all(set(c) == {'type', 'id', 'title', 'source_ids', 'sources', 'excerpt', 'attachment_ids'} for c in citations)
+        assert all(c['attachment_ids'] == [] for c in citations)
         doc = retrieval.load_documents(db)[0]
         assert '确认：否' in doc['text'] and '数量：0' in doc['text']
         assert not doc['text'].startswith('{')

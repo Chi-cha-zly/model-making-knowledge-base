@@ -1,3 +1,4 @@
+from pg_test_support import test_database_url
 import asyncio
 from types import SimpleNamespace
 import pytest
@@ -37,8 +38,7 @@ class Provider:
 
 def service(tmp_path, provider=None, configured=True):
     from app.experiments import ExperimentService
-    engine = create_engine('sqlite:///' + str(tmp_path/'test.db'))
-    Base.metadata.create_all(engine)
+    engine = create_engine(test_database_url('' + str(tmp_path/'test.db')))
     return ExperimentService(engine,provider or Provider(),asyncio.Lock(),settings={'AI_MODEL':'fake-model','LANGSMITH_API_KEY':'test-only' if configured else ''},client=FakeClient() if configured else None,evaluate=fake_evaluate)
 
 
@@ -133,15 +133,14 @@ def test_app_backup_v4_and_restore_lock(tmp_path,monkeypatch):
     from zipfile import ZipFile
     from io import BytesIO
     import json
-    monkeypatch.setattr(main,'_config',lambda:('sqlite:///'+str(tmp_path/'app.db'),str(tmp_path/'store'),10000000))
     from app import runtime_config
     monkeypatch.setattr(runtime_config,'read_settings',lambda:{})
-    app=main.create_app(provider=Provider())
+    app=main.create_app(test_database_url(str(tmp_path/'app.db')), tmp_path/'store', provider=Provider(), runtime_settings={})
     with TestClient(app) as client:
         assert hasattr(app.state,'experiments')
         backup=client.get('/api/v1/backup')
         with ZipFile(BytesIO(backup.content)) as z: data=json.loads(z.read('manifest.json'))
-        assert data['version']==5 and data['experiments']==[]
+        assert data['version']==6 and data['experiments']==[]
         assert client.post('/api/v1/backup',files={'file':('backup.zip',backup.content)}).status_code==200
 
 @pytest.mark.anyio
@@ -214,7 +213,7 @@ async def test_terminal_tasks_removed(tmp_path):
 async def test_owned_task_cleanup_blocks_restore(tmp_path):
     s=service(tmp_path)
     task=asyncio.create_task(asyncio.Event().wait())
-    s.tasks[123]=task
+    s.jobs.tasks[123]=task
     try: assert s.has_active()
     finally:
         task.cancel()
@@ -242,3 +241,20 @@ def test_uncertainty_marker_and_custom_endpoint_cost():
     usage={'input_tokens':100,'output_tokens':10,'total_tokens':110}
     assert cost('gpt-6-luna',usage,'https://api.openai.com/v1')==0.000015
     assert cost('gpt-6-luna',usage,'https://proxy.example/v1') is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('through_shared_jobs', [False, True])
+async def test_queued_cancel_synchronizes_experiment_and_job(tmp_path, through_shared_jobs):
+    from app.experiments import ExperimentInput
+    s = service(tmp_path)
+    row = await s.start(ExperimentInput(dataset_id='demo-v1', mode='retrieval', request_id='queued-stop'))
+    job = s.jobs.history('experiment')[0]
+    if through_shared_jobs:
+        await s.jobs.cancel(job['id'])
+    else:
+        await s.stop(row['id'])
+    assert s.snapshot(row['id'])['status'] == 'stopped'
+    assert s.jobs.snapshot(job['id'])['status'] == 'stopped'
+    assert not s.jobs.tasks
+    assert s.client.datasets == []

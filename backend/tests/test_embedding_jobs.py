@@ -1,3 +1,4 @@
+from pg_test_support import test_database_url
 """Real LangChain/SDK calls over MockTransport; database effects use temporary SQLite."""
 import asyncio
 import json
@@ -29,8 +30,7 @@ def provider(handler, configured=True):
 
 
 def seed(tmp_path, count=3):
-    engine = create_engine(f'sqlite:///{tmp_path / "embed.db"}')
-    Base.metadata.create_all(engine)
+    engine = create_engine(test_database_url(f'{tmp_path / "embed.db"}'))
     with engine.begin() as connection:
         connection.execute(Source.__table__.insert().values(id=1, title='source'))
         connection.execute(Technique.__table__.insert().values(id=1, title='technique'))
@@ -185,10 +185,10 @@ def test_cli_defaults_to_dry_run_and_uses_only_embedding_environment(tmp_path, c
     from scripts.embed_documents import main
     engine = seed(tmp_path)
     before = rows(engine)
-    assert main(['--database-url', str(engine.url)], environ=configuration()) == 0
+    assert main(['--database-url', engine.url.render_as_string(hide_password=False)], environ=configuration()) == 0
     result = json.loads(capsys.readouterr().out)
     assert result['status'] == 'dry_run' and rows(engine) == before
-    assert main(['--database-url', str(engine.url), '--apply'], environ={'AI_API_KEY': 'chat-secret'}) == 2
+    assert main(['--database-url', engine.url.render_as_string(hide_password=False), '--apply'], environ={'AI_API_KEY': 'chat-secret'}) == 2
     result = json.loads(capsys.readouterr().out)
     assert result['status'] == 'unconfigured' and 'chat-secret' not in json.dumps(result)
 
@@ -244,8 +244,7 @@ def test_cancellation_leaves_no_partial_vectors(tmp_path):
 
 def test_title_only_record_embeds_real_title_and_hashes_actual_input(tmp_path):
     from app.embedding_jobs import embed_pending
-    engine = create_engine(f'sqlite:///{tmp_path / "title.db"}')
-    Base.metadata.create_all(engine)
+    engine = create_engine(test_database_url(f'{tmp_path / "title.db"}'))
     with Session(engine) as db:
         db.add(Technique(title='靛蓝罩染', sources=[Source(title='出处')]))
         db.commit()
@@ -259,3 +258,14 @@ def test_title_only_record_embeds_real_title_and_hashes_actual_input(tmp_path):
     with Session(engine) as db:
         embedding = db.scalar(select(Embedding))
         assert embedding.status == 'ready' and embedding.content_hash == digest('靛蓝罩染')
+
+
+def test_progress_reports_each_terminal_document(tmp_path):
+    from app.embedding_jobs import embed_pending
+    engine = seed(tmp_path)
+    seen = []
+    result = asyncio.run(embed_pending(engine, provider(lambda _: response([[1., 0.]] * 3)),
+                                      apply=True, progress=lambda done, total: seen.append((done,total))))
+    assert result['documents'][0]['status'] == 'ready'
+    assert seen == [(0,1),(1,1)]
+    assert rows(engine)[-1][2] == 'ready'

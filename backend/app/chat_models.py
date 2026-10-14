@@ -29,7 +29,6 @@ class Run(Base):
         UniqueConstraint('conversation_id', 'request_id'),
         CheckConstraint("status IN ('queued','running','completed','stopped','failed')"),
         Index('one_active_run_per_conversation', 'conversation_id', unique=True,
-              sqlite_where=text("status IN ('queued','running')"),
               postgresql_where=text("status IN ('queued','running')")),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

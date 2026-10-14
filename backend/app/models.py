@@ -55,7 +55,6 @@ class Technique(Base):
     title: Mapped[str] = mapped_column(String(300))
     category: Mapped[str | None] = mapped_column(String(100), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
-    steps: Mapped[list] = mapped_column(JSON, default=list)
     content_blocks: Mapped[list] = mapped_column(JSON, default=list, nullable=False, server_default="[]")
     prerequisites: Mapped[str | None] = mapped_column(Text, nullable=True)
     risks: Mapped[str | None] = mapped_column(Text, nullable=True)

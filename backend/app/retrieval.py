@@ -60,7 +60,7 @@ def load_documents(db: Session) -> list[dict]:
             if kind == 'technique':
                 title = row.title
                 # Keep labels, order and fields identical to V2's original body.
-                body = readable_excerpt({'摘要': row.summary, '步骤': row.steps, '前提条件': row.prerequisites,
+                body = readable_excerpt({'摘要': row.summary, '正文': [b.get('text', b.get('caption', '')) for b in row.content_blocks or []], '前提条件': row.prerequisites,
                                          '风险': row.risks, '难度': row.difficulty, '标签': row.tags})
                 sku, aliases = '', []
                 fields = {'category': row.category or '', 'tags': readable_excerpt(row.tags)}
@@ -264,7 +264,7 @@ def search_documents(db: Session, query: str, k=6) -> list[dict]:
     available only to the explicitly offline evaluation functions above.
     """
     from sqlalchemy import and_, or_, func, case
-    from .models import Source
+    from .models import Source, Attachment
     from .ingestion import index_terms
     from .ingestion_models import Document, Chunk, Posting, DocumentSource
     if not isinstance(k, int) or isinstance(k, bool) or not 1 <= k <= 20:
@@ -304,10 +304,13 @@ def search_documents(db: Session, query: str, k=6) -> list[dict]:
         Product.status == 'published').exists()
     bound_source = select(DocumentSource.source_id).join(Source, Source.id == DocumentSource.source_id).where(
         DocumentSource.document_id == Document.id, DocumentSource.version == Chunk.version, valid_source).exists()
+    current_image = or_(Chunk.attachment_id.is_(None), select(Attachment.id).where(
+        Attachment.id == Chunk.attachment_id, Attachment.owner_id == 'local', Attachment.status == 'published',
+        Attachment.sha256 == Chunk.payload['attachment_hash'].as_string()).exists())
     weight = func.sum(case((Posting.term.like('s:%'), 100), (Posting.term.like('t:%'), 3), else_=1))
     statement = (select(Chunk.id, weight.label('weight')).join(Posting, Posting.chunk_id == Chunk.id)
                  .join(Document, Document.id == Chunk.document_id)
-                 .where(Posting.term.in_(terms), Chunk.version == Document.active_version, bound_source,
+                 .where(Posting.term.in_(terms), Chunk.version == Document.active_version, bound_source, current_image,
                         or_(and_(Document.kind == 'technique', valid_technique),
                             and_(Document.kind == 'product', valid_product)))
                  .group_by(Chunk.id).order_by(weight.desc(), Chunk.id.desc()).limit(200))
@@ -325,15 +328,18 @@ def search_documents(db: Session, query: str, k=6) -> list[dict]:
     short_text = {}
     if short_ids:
         for chunk in db.scalars(select(Chunk).join(Document, Document.id == Chunk.document_id)
-                                .where(Chunk.document_id.in_(short_ids), Chunk.version == Document.active_version)
+                                .where(Chunk.document_id.in_(short_ids), Chunk.version == Document.active_version, current_image)
                                 .order_by(Chunk.document_id, Chunk.ordinal)):
             short_text.setdefault(chunk.document_id, []).append(chunk.content)
     documents = {}
     long_parts = {}
+    matched_images = {}
     for candidate in candidates:
         chunk = chunks[candidate.id]
         payload = chunk.payload
         key = payload['key']
+        if chunk.attachment_id is not None and set(_tokens(chunk.content)) & words:
+            matched_images.setdefault(key, set()).add(chunk.attachment_id)
         if chunk.document_id not in short_text:
             long_parts.setdefault(key, []).append(chunk.content)
         if key in documents:
@@ -360,6 +366,10 @@ def search_documents(db: Session, query: str, k=6) -> list[dict]:
                       for term in matched if term in normalized_text}
             for start in sorted(starts):
                 snippet = text[start:start + 950]
+                from .ingestion import IMAGE_ORIGINS
+                origin = next((label for label in IMAGE_ORIGINS if text.startswith(label)), '')
+                if origin and not snippet.startswith(origin):
+                    snippet = origin + '\n' + snippet
                 if snippet not in seen_windows:
                     seen_windows.add(snippet)
                     windows.append((snippet, set(_tokens(snippet)) & words))
@@ -374,7 +384,10 @@ def search_documents(db: Session, query: str, k=6) -> list[dict]:
             uncovered.difference_update(covered)
         if excerpts:
             documents[key]['excerpt'] = '\n…\n'.join(excerpts)
-    return rank_documents(list(documents.values()), query, k=k)
+    hits = rank_documents(list(documents.values()), query, k=k)
+    for hit in hits:
+        hit['attachment_ids'] = sorted(matched_images.get(hit['key'], set()))
+    return hits
 
 
 # Register tables and commit-time indexing for ORM callers as well as the API.

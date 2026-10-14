@@ -72,11 +72,21 @@ def cost(model,usage,base_url=None):
 
 
 class ExperimentService:
-    def __init__(self,engine,provider,lock,*,settings=None,client=UNSET,evaluate=None):
+    def __init__(self,engine,provider,lock,*,settings=None,client=UNSET,evaluate=None,jobs=None):
         from .runtime_config import read_settings
         self.engine=engine; self.provider=provider; self.lock=lock
         self.settings=read_settings() if settings is None else dict(settings)
-        self.client=client; self.evaluate=evaluate; self.tasks={}; self.system_prompt=SYSTEM
+        self.client=client; self.evaluate=evaluate; self.system_prompt=SYSTEM
+        from .jobs import JobService
+        self.jobs = jobs if jobs is not None else JobService(engine)
+
+    @property
+    def tasks(self):
+        from .job_models import Job
+        with Session(self.engine) as db:
+            return {int(row.request_id): self.jobs.tasks[row.id]
+                    for row in db.scalars(select(Job).where(Job.kind == 'experiment'))
+                    if row.id in self.jobs.tasks}
 
     def history(self):
         with Session(self.engine) as db:
@@ -93,9 +103,15 @@ class ExperimentService:
             row=db.get(ExperimentJob,id)
             row.payload={**row.payload,**fields,'updated_at':now()}
             db.commit()
+        if 'progress' in fields:
+            from .job_models import Job
+            with Session(self.engine) as db:
+                job_id = db.scalar(select(Job.id).where(Job.kind == 'experiment', Job.request_id == str(id)))
+            if job_id is not None:
+                self.jobs.update(job_id, progress=fields['progress'], total=self.snapshot(id)['total'])
 
     def has_active(self):
-        return any(not task.done() for task in self.tasks.values()) or any(p['status'] in ACTIVE for p in self.history())
+        return any(not task.done() for task in self.jobs.tasks.values()) or any(p['status'] in ACTIVE for p in self.history())
 
     def recover(self):
         with Session(self.engine) as db:
@@ -133,16 +149,21 @@ class ExperimentService:
                 row=ExperimentJob(request_id=data.request_id,request_hash=digest,payload=payload,snapshot=snapshot)
                 db.add(row); db.flush(); row.payload={**payload,'id':row.id}; db.commit()
                 output=deepcopy(row.payload)
-            task=asyncio.create_task(self.run(output['id']))
-            self.tasks[output['id']]=task
-            task.add_done_callback(lambda done: self.tasks.pop(output['id'],None) if self.tasks.get(output['id']) is done else None)
+            async def execute(context):
+                await self.run(output['id'])
+                return self.snapshot(output['id'])
+            def cancelled():
+                if self.snapshot(output['id'])['status'] in ACTIVE:
+                    self.update(output['id'], status='stopped', error='实验已停止；云端可能保留部分记录。')
+            await self.jobs.submit('experiment', str(output['id']), {'snapshot_hash': output['snapshot_hash']}, execute, on_cancel=cancelled)
             return output
 
     async def stop(self,id):
-        task=self.tasks.get(id)
-        if task and not task.done():
-            task.cancel()
-            with suppress(asyncio.CancelledError): await task
+        from .job_models import Job
+        with Session(self.engine) as db:
+            job_id = db.scalar(select(Job.id).where(Job.kind == 'experiment', Job.request_id == str(id)))
+        if job_id is not None:
+            await self.jobs.cancel(job_id)
         if self.snapshot(id)['status'] in ACTIVE:
             self.update(id,status='stopped',error='实验已停止；云端可能保留部分记录。')
         return self.snapshot(id)

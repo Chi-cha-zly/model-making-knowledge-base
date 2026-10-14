@@ -1,3 +1,4 @@
+from pg_test_support import test_database_url
 """Settings tests use isolated fake credentials and never contact an upstream."""
 import json
 import stat
@@ -9,7 +10,7 @@ FAKE = {'AI_BASE_URL':'https://example.invalid/v1','AI_MODEL':'fake','AI_API_KEY
 PAYLOAD = dict(name='Local', base_url='http://127.0.0.1:9999/v1', model='fake', compare_model='', reasoning_effort='auto', max_output_tokens=256, api_key='saved-test-secret')
 
 def make(tmp_path):
-    return create_app(f"sqlite:///{tmp_path/'db.sqlite'}", tmp_path/'uploads', settings_path=tmp_path/'private.json', runtime_settings=FAKE)
+    return create_app(test_database_url(f"{tmp_path/'db.sqlite'}"), tmp_path/'uploads', settings_path=tmp_path/'private.json', runtime_settings=FAKE)
 
 def test_crud_private_persistence_and_key_ownership(tmp_path):
     app=make(tmp_path)
@@ -119,7 +120,7 @@ def test_chat_prompt_sent_with_fixed_rules(tmp_path):
             self.messages=messages
             yield 'fake answer'
     provider=Capture()
-    app=create_app(f"sqlite:///{tmp_path/'db.sqlite'}",tmp_path/'uploads',provider=provider,settings_path=tmp_path/'private.json',runtime_settings=FAKE)
+    app=create_app(test_database_url(f"{tmp_path/'db.sqlite'}"),tmp_path/'uploads',provider=provider,settings_path=tmp_path/'private.json',runtime_settings=FAKE)
     with TestClient(app) as c:
         c.put('/api/v1/settings/prompt',json={'text':'Explain each term.'})
         cid=c.post('/api/v1/conversations',json={}).json()['id']
@@ -188,7 +189,7 @@ def test_persisted_active_chat_blocks_settings(tmp_path):
         async def stream(self,messages):
             yield 'partial'
             await asyncio.Event().wait()
-    app=create_app(f"sqlite:///{tmp_path/'db.sqlite'}",tmp_path/'uploads',provider=Block(),settings_path=tmp_path/'private.json',runtime_settings=FAKE)
+    app=create_app(test_database_url(f"{tmp_path/'db.sqlite'}"),tmp_path/'uploads',provider=Block(),settings_path=tmp_path/'private.json',runtime_settings=FAKE)
     with TestClient(app) as c:
         cid=c.post('/api/v1/conversations',json={}).json()['id']
         rid=c.post(f'/api/v1/conversations/{cid}/runs',json={'content':'fake','request_id':'busy'}).json()['id']
@@ -212,6 +213,6 @@ def test_injected_provider_preserved_with_saved_active_profile(tmp_path):
         id=c.post('/api/v1/settings/profiles',json=PAYLOAD).json()['profiles'][-1]['id']
         c.post(f'/api/v1/settings/profiles/{id}/activate',json={})
     provider=Injected()
-    app=create_app(f"sqlite:///{tmp_path/'db.sqlite'}",tmp_path/'uploads',provider=provider,settings_path=tmp_path/'private.json',runtime_settings=FAKE)
+    app=create_app(test_database_url(f"{tmp_path/'db.sqlite'}"),tmp_path/'uploads',provider=provider,settings_path=tmp_path/'private.json',runtime_settings=FAKE)
     assert app.state.chat.provider is provider
     assert app.state.experiments.provider is provider

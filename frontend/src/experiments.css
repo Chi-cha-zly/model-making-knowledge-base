@@ -1,1 +1,125 @@
-.experiment-workbench{max-width:100%;min-width:0}.experiment-status{background:#fff;border:1px solid #dce5e6;padding:16px;margin:18px 0;overflow-wrap:anywhere}.experiment-status p:first-child{margin-top:0}.experiment-controls{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,2fr) minmax(90px,1fr) minmax(90px,1fr);gap:14px;border:1px solid #cbd9dd;padding:16px;min-width:0}.experiment-controls legend,.experiment-models legend{font-weight:600;padding:0 6px}.experiment-models{grid-column:1/-1;border:0;padding:0;margin:0;min-width:0}.experiment-models label{display:flex;align-items:center;gap:8px;overflow-wrap:anywhere;margin:8px 0}.experiment-models input[type=checkbox]{width:18px;height:18px;flex-shrink:0}.experiment-active{border-left:3px solid #315e6c;padding:12px 16px;background:#eaf2f1;margin-top:18px}.experiment-definitions{margin-top:20px}.experiment-report{margin-top:24px;border:1px solid #dce5e6;background:#fff;padding:18px;overflow-wrap:anywhere}.experiment-progress{max-width:420px}.experiment-progress progress{width:100%;accent-color:#315e6c}.experiment-links{display:flex;flex-wrap:wrap;gap:15px;margin:14px 0}.experiment-links a{color:#315e6c;text-decoration:underline}.experiment-answer{white-space:pre-wrap;background:#edf3f1;padding:14px}.experiment-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}.experiment-metrics>div{border:1px solid #dce5e6;padding:10px}.experiment-metrics dt{color:#61777f}.experiment-metrics dd{margin:6px 0 0;font-variant-numeric:tabular-nums}.evaluation-tabs{flex-wrap:wrap}.evaluation-workbench button:disabled{opacity:.5;cursor:not-allowed}@media(max-width:700px){.experiment-controls{grid-template-columns:1fr 1fr;padding:12px}.experiment-controls>label:nth-child(-n+2){grid-column:1/-1}.experiment-report{padding:12px}.experiment-metrics{grid-template-columns:1fr 1fr}}
+.experiment-workbench {
+  max-width: 100%;
+  min-width: 0;
+}
+.experiment-status {
+  background: #fff;
+  border: 1px solid #dce5e6;
+  padding: 16px;
+  margin: 18px 0;
+  overflow-wrap: anywhere;
+}
+.experiment-status p:first-child {
+  margin-top: 0;
+}
+.experiment-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 2fr) minmax(90px, 1fr) minmax(
+      90px,
+      1fr
+    );
+  gap: 14px;
+  border: 1px solid #cbd9dd;
+  padding: 16px;
+  min-width: 0;
+}
+.experiment-controls legend,
+.experiment-models legend {
+  font-weight: 600;
+  padding: 0 6px;
+}
+.experiment-models {
+  grid-column: 1/-1;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.experiment-models label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-wrap: anywhere;
+  margin: 8px 0;
+}
+.experiment-models input[type='checkbox'] {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+.experiment-active {
+  border-left: 3px solid #315e6c;
+  padding: 12px 16px;
+  background: #eaf2f1;
+  margin-top: 18px;
+}
+.experiment-definitions {
+  margin-top: 20px;
+}
+.experiment-report {
+  margin-top: 24px;
+  border: 1px solid #dce5e6;
+  background: #fff;
+  padding: 18px;
+  overflow-wrap: anywhere;
+}
+.experiment-progress {
+  max-width: 420px;
+}
+.experiment-progress progress {
+  width: 100%;
+  accent-color: #315e6c;
+}
+.experiment-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 15px;
+  margin: 14px 0;
+}
+.experiment-links a {
+  color: #315e6c;
+  text-decoration: underline;
+}
+.experiment-answer {
+  white-space: pre-wrap;
+  background: #edf3f1;
+  padding: 14px;
+}
+.experiment-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+}
+.experiment-metrics > div {
+  border: 1px solid #dce5e6;
+  padding: 10px;
+}
+.experiment-metrics dt {
+  color: #61777f;
+}
+.experiment-metrics dd {
+  margin: 6px 0 0;
+  font-variant-numeric: tabular-nums;
+}
+.evaluation-tabs {
+  flex-wrap: wrap;
+}
+.evaluation-workbench button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+@media (max-width: 700px) {
+  .experiment-controls {
+    grid-template-columns: 1fr 1fr;
+    padding: 12px;
+  }
+  .experiment-controls > label:nth-child(-n + 2) {
+    grid-column: 1/-1;
+  }
+  .experiment-report {
+    padding: 12px;
+  }
+  .experiment-metrics {
+    grid-template-columns: 1fr 1fr;
+  }
+}

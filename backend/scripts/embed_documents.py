@@ -4,7 +4,7 @@ import asyncio
 import json
 import os
 
-from sqlalchemy import create_engine
+from app.db import create_db_engine
 
 from app.embedding_jobs import embed_pending
 from app.llm import LangChainProvider
@@ -21,7 +21,7 @@ def main(argv=None, *, environ=None):
     settings = {name: env.get(name, '') for name in ('EMBEDDING_BASE_URL', 'EMBEDDING_API_KEY', 'EMBEDDING_MODEL')}
     engine = None
     try:
-        engine = create_engine(args.database_url)
+        engine = create_db_engine(args.database_url)
         result = asyncio.run(embed_pending(engine, LangChainProvider(settings=settings), apply=args.apply,
             batch_size=args.batch_size, max_documents=args.max_documents))
     except Exception:

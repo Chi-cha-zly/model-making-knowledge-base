@@ -1,3 +1,4 @@
+from pg_test_support import test_database_url
 from io import BytesIO
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -7,7 +8,7 @@ from app import retrieval
 
 
 def test_indexed_search_long_tail_update_withdraw_restore_and_no_full_scan(tmp_path, monkeypatch):
-    app = create_app(f'sqlite:///{tmp_path / "test.db"}', tmp_path / 'files', runtime_settings={})
+    app = create_app(test_database_url(f'{tmp_path / "test.db"}'), tmp_path / 'files', runtime_settings={})
     with TestClient(app) as client:
         sid = client.post('/api/v1/sources', json={'title': '真实出处'}).json()['id']
         row = client.post('/api/v1/techniques', json={'title': '长篇', 'summary': '普通步骤。' * 1300 + '\n\n稀有靛蓝罩染', 'source_ids': [sid]}).json()
@@ -30,7 +31,7 @@ def test_indexed_search_long_tail_update_withdraw_restore_and_no_full_scan(tmp_p
 
 def test_image_chunk_keeps_attachment_reference(tmp_path):
     from app.ingestion_models import Chunk
-    app = create_app(f'sqlite:///{tmp_path / "test.db"}', tmp_path / 'files', runtime_settings={})
+    app = create_app(test_database_url(f'{tmp_path / "test.db"}'), tmp_path / 'files', runtime_settings={})
     with TestClient(app) as client:
         sid = client.post('/api/v1/sources', json={'title': '图例'}).json()['id']
         aid = client.post('/api/v1/attachments', files={'file': ('a.png', b'\x89PNG\r\n\x1a\nxx', 'image/png')}).json()['id']
@@ -45,9 +46,8 @@ def test_startup_indexes_legacy_rows_once(tmp_path):
     from sqlalchemy import create_engine
     from app.models import Base, Source, Technique
     from app.ingestion_models import Document, IngestionJob
-    url = f'sqlite:///{tmp_path / "legacy.db"}'
+    url = test_database_url(f'{tmp_path / "legacy.db"}')
     engine = create_engine(url)
-    Base.metadata.create_all(engine)
     # Simulate rows written by the pre-ingestion release without ORM hooks.
     with engine.begin() as connection:
         connection.execute(Source.__table__.insert().values(id=1, title='旧出处'))
@@ -65,7 +65,7 @@ def test_startup_indexes_legacy_rows_once(tmp_path):
 def test_candidates_rank_before_limit_and_chat_excerpt_contains_tail(tmp_path):
     from app.models import Technique, Source
     from app.chat import evidence
-    app = create_app(f'sqlite:///{tmp_path / "bounded.db"}', tmp_path / 'files', runtime_settings={})
+    app = create_app(test_database_url(f'{tmp_path / "bounded.db"}'), tmp_path / 'files', runtime_settings={})
     with Session(app.state.engine) as db:
         source = Source(title='当前出处', url='https://example.org/current')
         db.add_all([Technique(title=f'背景笔记{i}', summary='蓝色', sources=[source]) for i in range(205)])
@@ -89,10 +89,8 @@ def test_postgres_ingestion_versions_tail_and_restore(tmp_path, monkeypatch):
     import pytest
     from app import ingestion
     from app.ingestion_models import Document, IngestionJob, Embedding
-    url = os.environ.get('PG_TEST_DATABASE_URL')
-    if not url:
-        pytest.skip('Set PG_TEST_DATABASE_URL to a migrated disposable PostgreSQL DB')
-    app = create_app(url, tmp_path / 'pg-files', initialize_sqlite=False, runtime_settings={})
+    url = test_database_url()
+    app = create_app(url, tmp_path / 'pg-files', runtime_settings={})
     with TestClient(app) as client:
         sid = client.post('/api/v1/sources', json={'title': 'PG真实出处' + uuid.uuid4().hex}).json()['id']
         record = client.post('/api/v1/techniques', json={'title': 'PG长文', 'source_ids': [sid],
@@ -123,7 +121,7 @@ def test_postgres_ingestion_versions_tail_and_restore(tmp_path, monkeypatch):
 
 def test_restore_parser_failure_rolls_back_old_active_index(tmp_path, monkeypatch):
     from app import ingestion
-    app = create_app(f'sqlite:///{tmp_path / "restore-failure.db"}', tmp_path / 'files', runtime_settings={})
+    app = create_app(test_database_url(f'{tmp_path / "restore-failure.db"}'), tmp_path / 'files', runtime_settings={})
     with TestClient(app) as client:
         sid = client.post('/api/v1/sources', json={'title': '原始出处'}).json()['id']
         client.post('/api/v1/techniques', json={'title': '教程', 'summary': '靛蓝罩染', 'source_ids': [sid]})
@@ -141,7 +139,7 @@ def test_failed_version_never_relabels_old_text_with_new_source(tmp_path, monkey
     from app.models import Technique, Source
     from app import ingestion
     from app.ingestion_models import Document
-    app = create_app(f'sqlite:///{tmp_path / "source-version.db"}', tmp_path / 'files', runtime_settings={})
+    app = create_app(test_database_url(f'{tmp_path / "source-version.db"}'), tmp_path / 'files', runtime_settings={})
     with Session(app.state.engine) as db:
         old = Source(title='原始出处')
         row = Technique(title='教程', summary='旧来源特有靛蓝罩染', sources=[old])
@@ -174,7 +172,7 @@ def test_failed_version_never_relabels_old_text_with_new_source(tmp_path, monkey
 def test_long_excerpt_covers_specific_term_from_separate_chunk(tmp_path):
     from app.models import Technique, Source
     from app.chat import evidence
-    app = create_app(f'sqlite:///{tmp_path / "excerpt.db"}', tmp_path / 'files', runtime_settings={})
+    app = create_app(test_database_url(f'{tmp_path / "excerpt.db"}'), tmp_path / 'files', runtime_settings={})
     with Session(app.state.engine) as db:
         db.add(Technique(title='sanding', summary='sanding preparation ' * 300,
                          content_blocks=[{'type': 'paragraph', 'text': 'sanding: use grit 3000'}],
@@ -187,7 +185,7 @@ def test_long_excerpt_covers_specific_term_from_separate_chunk(tmp_path):
 def test_long_excerpt_does_not_count_terms_outside_emitted_window(tmp_path):
     from app.models import Technique, Source
     from app.chat import evidence
-    app = create_app(f'sqlite:///{tmp_path / "window.db"}', tmp_path / 'files', runtime_settings={})
+    app = create_app(test_database_url(f'{tmp_path / "window.db"}'), tmp_path / 'files', runtime_settings={})
     with Session(app.state.engine) as db:
         db.add(Technique(title='sanding', summary='sanding preparation ' + 'x ' * 600 + 'use grit 3000 ' + 'y ' * 1200,
                          sources=[Source(title='manual')]))

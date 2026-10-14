@@ -1,3 +1,4 @@
+from pg_test_support import test_database_url
 """Run with PG_TEST_DATABASE_URL against a migrated disposable PostgreSQL DB."""
 
 import os
@@ -9,10 +10,8 @@ from app.main import create_app
 
 
 def test_postgres_candidates_cover_tags_kind_and_fuzzy_identifiers(tmp_path):
-    url = os.environ.get("PG_TEST_DATABASE_URL")
-    if not url:
-        pytest.skip("Set PG_TEST_DATABASE_URL for PostgreSQL integration test")
-    app = create_app(url, tmp_path / "uploads", initialize_sqlite=False)
+    url = test_database_url()
+    app = create_app(url, tmp_path / "uploads")
     with TestClient(app) as client:
         source = client.post("/api/v1/sources", json={"title": "Search test source"}).json()
         sid = source["id"]

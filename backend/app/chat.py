@@ -5,6 +5,7 @@ from datetime import datetime
 import hashlib
 import json
 import re
+from time import monotonic
 from typing import Protocol
 
 from fastapi import APIRouter, HTTPException
@@ -70,6 +71,7 @@ def evidence(db, query):
     selected, size = [], 0
     for hit in search_documents(db, query, k=6):
         item = {key: hit[key] for key in ('type', 'id', 'title', 'source_ids', 'sources', 'excerpt')}
+        item['attachment_ids'] = hit.get('attachment_ids', [])[:6]
         item_size = len(json.dumps(item, ensure_ascii=False))
         if size + item_size <= 24000:
             selected.append(item)
@@ -149,37 +151,78 @@ class ChatService:
         return [system, *[message for turn in reversed(turns) for message in turn], context]
 
     async def generate(self, rid):
+        content = ''
+        persisted = ''
+        pending = None
+        last_flush = monotonic()
+
+        def flush():
+            nonlocal persisted, last_flush
+            if content != persisted:
+                with Session(self.engine) as db:
+                    run = get(db, Run, rid)
+                    if run.status not in ACTIVE:
+                        return False
+                    run.content = content
+                    run.updated_at = now()
+                    get(db, Message, run.assistant_message_id).content = content
+                    get(db, Conversation, run.conversation_id).updated_at = now()
+                    db.commit()
+                persisted = content
+            last_flush = monotonic()
+            return True
+
         try:
             with Session(self.engine) as db:
                 run = get(db, Run, rid)
+                content = persisted = run.content
                 run.status = 'running'
                 run.updated_at = now()
                 messages = self.messages_for(db, run)
                 db.commit()
             async with aclosing(self.provider.stream(messages)) as stream:
-                async for chunk in stream:
-                    if not isinstance(chunk, str):
-                        raise ProviderError('模型服务返回了无法解析的文本。')
-                    with Session(self.engine) as db:
-                        run = get(db, Run, rid)
-                        if run.status not in ACTIVE:
-                            return
-                        if len(run.content) + len(chunk) > 100000:
+                try:
+                    while True:
+                        if pending is None:
+                            pending = asyncio.create_task(anext(stream))
+                        done, _ = await asyncio.wait(
+                            [pending], timeout=max(0, .5 - (monotonic() - last_flush)))
+                        if not done:
+                            if not flush():
+                                return
+                            continue
+                        completed, pending = pending, None
+                        try:
+                            chunk = completed.result()
+                        except StopAsyncIteration:
+                            break
+                        if not isinstance(chunk, str):
+                            raise ProviderError('模型服务返回了无法解析的文本。')
+                        if len(content) + len(chunk) > 100000:
                             raise ProviderError('回答达到长度上限；请缩小问题范围后重试。')
-                        run.content += chunk
-                        run.updated_at = now()
-                        get(db, Message, run.assistant_message_id).content = run.content
-                        get(db, Conversation, run.conversation_id).updated_at = now()
-                        db.commit()
+                        content += chunk
+                        if len(content) - len(persisted) >= 256 or monotonic() - last_flush >= .5:
+                            if not flush():
+                                return
+                finally:
+                    # Close the in-flight iterator before aclosing closes its generator.
+                    if pending is not None:
+                        pending.cancel()
+                        with suppress(asyncio.CancelledError, StopAsyncIteration):
+                            await pending
+            flush()
             with Session(self.engine) as db:
                 run = get(db, Run, rid)
-                run.status = 'completed' if run.content.strip() else 'failed'
-                run.error = None if run.content.strip() else '模型未返回文本，请重试。'
-                run.updated_at = now()
-                db.commit()
+                if run.status in ACTIVE:
+                    run.status = 'completed' if run.content.strip() else 'failed'
+                    run.error = None if run.content.strip() else '模型未返回文本，请重试。'
+                    run.updated_at = now()
+                    db.commit()
         except asyncio.CancelledError:
+            flush()
             raise
         except Exception as exc:
+            flush()
             with Session(self.engine) as db:
                 run = db.get(Run, rid)
                 if run and run.status in ACTIVE:
@@ -407,6 +450,9 @@ def validate_chat_backup(data):
                 raise ValueError('Invalid citation fields')
             if citation['source_ids'] != [s.get('id') for s in citation['sources'] if isinstance(s, dict)]:
                 raise ValueError('Invalid citation sources')
+            image_ids = citation.get('attachment_ids', [])
+            if not isinstance(image_ids, list) or len(image_ids) > 6 or any(type(i) is not int or i <= 0 for i in image_ids):
+                raise ValueError('Invalid citation images')
             for source in citation['sources']:
                 if not isinstance(source, dict) or type(source.get('id')) is not int or not isinstance(source.get('title'), str) or (source.get('url') is not None and not isinstance(source.get('url'), str)):
                     raise ValueError('Invalid citation source')

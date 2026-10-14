@@ -1,3 +1,4 @@
+from pg_test_support import test_database_url
 from io import BytesIO
 import json
 import os
@@ -14,7 +15,7 @@ from sqlalchemy.orm import Session
 
 @pytest.fixture
 def client(tmp_path):
-    app = create_app(f"sqlite:///{tmp_path / 'test.db'}", tmp_path / "uploads")
+    app = create_app(test_database_url(f"{tmp_path / 'test.db'}"), tmp_path / "uploads")
     with TestClient(app) as client:
         yield client
 
@@ -27,13 +28,13 @@ def source(client, title="说明书"):
 
 def test_source_and_technique_crud_keep_evidence(client):
     sid = source(client)
-    response = client.post("/api/v1/techniques", json={"title": "修水口", "category": "素组", "summary": "先剪后磨", "steps": ["二次剪切", "打磨"], "source_ids": [sid], "tags": ["水口"]})
+    response = client.post("/api/v1/techniques", json={"title": "修水口", "category": "素组", "summary": "先剪后磨", 'content_blocks': [{'type': 'paragraph', 'text': t} for t in ["二次剪切", "打磨"]], "source_ids": [sid], "tags": ["水口"]})
     assert response.status_code == 201, response.text
     item = response.json()
     assert item["source_ids"] == [sid]
     assert item["status"] == "published"
     assert item["visibility"] == "private"
-    assert client.get(f"/api/v1/techniques/{item['id']}").json()["steps"] == ["二次剪切", "打磨"]
+    assert client.get(f"/api/v1/techniques/{item['id']}").json()["content_blocks"] == [{"type": "paragraph", "text": "二次剪切"}, {"type": "paragraph", "text": "打磨"}]
     patched = client.patch(f"/api/v1/techniques/{item['id']}", json={"summary": "用砂纸打磨", "status": "withdrawn"})
     assert patched.status_code == 200
     assert patched.json()["summary"] == "用砂纸打磨"
@@ -189,11 +190,11 @@ def test_export_rejects_archive_too_large_to_restore(client, monkeypatch):
 
 
 def test_backup_limit_can_be_raised_for_large_library(tmp_path, monkeypatch):
-    from app import main as main_module
+    from app.services import runtime as runtime_module
 
-    monkeypatch.setattr(main_module, "MAX_BACKUP", 256)
+    monkeypatch.setattr(runtime_module, "MAX_BACKUP", 256)
     monkeypatch.setenv("BACKUP_MAX_BYTES", "8192")
-    app = create_app(f"sqlite:///{tmp_path / 'large.db'}", tmp_path / "images")
+    app = create_app(test_database_url(f"{tmp_path / 'large.db'}"), tmp_path / "images")
     with TestClient(app) as large_client:
         source(large_client)
         archive = large_client.get("/api/v1/backup")

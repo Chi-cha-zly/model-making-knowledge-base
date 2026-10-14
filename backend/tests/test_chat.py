@@ -1,3 +1,4 @@
+from pg_test_support import test_database_url
 import asyncio
 import json
 import threading
@@ -34,7 +35,7 @@ class ControlledProvider:
 
 
 def setup(tmp_path, provider=None):
-    return create_app(f"sqlite:///{tmp_path / 'chat.db'}", tmp_path / 'uploads', provider=provider or ControlledProvider())
+    return create_app(test_database_url(f"{tmp_path / 'chat.db'}"), tmp_path / 'uploads', provider=provider or ControlledProvider())
 
 
 def conversation(client):
@@ -298,7 +299,7 @@ def test_citation_excerpt_is_readable_and_omits_empty_fields(tmp_path):
     with TestClient(setup(tmp_path)) as client:
         sid = client.post('/api/v1/sources', json={'title': '说明书'}).json()['id']
         client.post('/api/v1/techniques', json={
-            'title': '修水口', 'summary': '先剪后磨', 'steps': ['二次剪切', '逐级打磨'],
+            'title': '修水口', 'summary': '先剪后磨', 'content_blocks': [{'type': 'paragraph', 'text': t} for t in ['二次剪切', '逐级打磨']],
             'source_ids': [sid], 'tags': ['素组', '水口']})
         client.post('/api/v1/products', json={
             'name': '水口砂纸', 'kind': '打磨工具', 'aliases': ['打磨纸'],
@@ -308,7 +309,7 @@ def test_citation_excerpt_is_readable_and_omits_empty_fields(tmp_path):
         row = wait(client, run['id'])
         excerpts = {citation['type']: citation['excerpt'] for citation in row['citations']}
         assert '摘要：先剪后磨' in excerpts['technique']
-        assert '步骤：\n- 二次剪切\n- 逐级打磨' in excerpts['technique']
+        assert '二次剪切\n逐级打磨' in excerpts['technique']
         assert '标签：\n- 素组\n- 水口' in excerpts['technique']
         assert '前提条件' not in excerpts['technique']
         assert '类别：打磨工具' in excerpts['product']

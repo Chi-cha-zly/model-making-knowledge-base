@@ -10,11 +10,11 @@ import hashlib
 import json
 from pathlib import Path
 import re
-import subprocess
 import sys
 from uuid import uuid4
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
+from app.db import create_db_engine
 from sqlalchemy.orm import Session
 
 from app.models import Attachment, Source, Technique
@@ -22,34 +22,11 @@ from app.models import Attachment, Source, Technique
 IMAGE_TYPES = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
                '.gif': 'image/gif', '.webp': 'image/webp'}
 SOURCE_TYPE = 'local-nmm-import'
-OCR_NOTICE = '本地 OCR 原文（未经人工核对，可能包含错字；视觉描述尚未生成）：\n'
-EMPTY_NOTICE = '本地 OCR 未提取到可识别文字；视觉描述尚未生成。仅按文件名元数据检索，请查看原图。'
+OCR_NOTICE = '本地 OCR 原文（未经人工核对，可能包含错字）：\n'
+EMPTY_NOTICE = '本地 OCR 未提取到可识别文字。请查看原图；模型视觉推断如有生成，将单独标注。'
 
 
-class TesseractOCR:
-    def __init__(self, *, executable='tesseract', languages='chi_sim+eng', tessdata_dir=None, timeout=90):
-        self.executable = executable
-        self.languages = languages
-        self.tessdata_dir = Path(tessdata_dir).resolve() if tessdata_dir else None
-        self.timeout = timeout
-
-    def __call__(self, path):
-        command = [self.executable, str(Path(path).resolve()), 'stdout', '-l', self.languages,
-                   '--oem', '1', '--psm', '11']
-        if self.tessdata_dir:
-            command += ['--tessdata-dir', str(self.tessdata_dir)]
-        try:
-            result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8',
-                                    check=False, timeout=self.timeout)
-        except FileNotFoundError:
-            raise RuntimeError('Tesseract executable is unavailable') from None
-        except subprocess.TimeoutExpired:
-            raise RuntimeError('Tesseract OCR timed out') from None
-        if result.returncode:
-            raise RuntimeError('Tesseract OCR failed; verify image and installed language data')
-        # Tesseract may put spaces between every Chinese character. Join only adjacent
-        # CJK characters; preserve Latin words, paint identifiers and line boundaries.
-        return re.sub(r'(?<=[\u3400-\u9fff])[^\S\n]+(?=[\u3400-\u9fff])', '', result.stdout).strip()
+from app.services.ocr import TesseractOCR
 
 
 def scan_directory(directory, markdown=()):
@@ -154,7 +131,6 @@ def _import_one(db, path, item, storage, ocr):
         else:
             blocks = [{'type': 'paragraph', 'text': body[i:i + 20000]} for i in range(0, len(body), 20000)]
         record = Technique(title=title, category='NMM 参考', summary=body, content_blocks=blocks,
-                           steps=[b.get('caption', b.get('text', '')) for b in blocks],
                            tags=['NMM', '本地OCR' if image else '知识正文'], sources=[source], attachments=attachments)
         db.add(record)
         db.flush()
@@ -178,7 +154,7 @@ def import_directory(directory, database_url, storage_dir, *, markdown=(), dry_r
               'files': files, 'counts': {}}
     # Dry-run intentionally does not connect to or initialize any target.
     if not dry_run:
-        engine = create_engine(database_url)
+        engine = create_db_engine(database_url)
         try:
             for item in files:
                 if item['status'] != 'planned':

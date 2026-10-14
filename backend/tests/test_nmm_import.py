@@ -1,3 +1,4 @@
+from pg_test_support import test_database_url
 """Importer regressions: selection, atomic writes, retry and original evidence."""
 import base64
 from pathlib import Path
@@ -19,7 +20,7 @@ def test_dry_run_requires_explicit_markdown_and_never_creates_target(tmp_path):
     (source / '知识.md').write_text('# 非金属金属\n薄涂。')
     (source / 'nmm需求文档.md').write_text('开发提示词不是知识')
     target = tmp_path / 'target'
-    report = import_directory(source, f'sqlite:///{target}/kb.db', target / 'attachments',
+    report = import_directory(source, test_database_url(f'{target}/kb.db'), target / 'attachments',
                               markdown=['知识.md'], dry_run=True)
     assert report['counts']['planned'] == 2
     assert report['counts']['skipped'] == 1
@@ -31,8 +32,7 @@ def test_dry_run_requires_explicit_markdown_and_never_creates_target(tmp_path):
 def import_target(tmp_path):
     # Production ingest tables must exist before importing.
     import app.ingestion_models  # noqa: F401
-    engine = create_engine(f'sqlite:///{tmp_path}/kb.db')
-    Base.metadata.create_all(engine)
+    engine = create_engine(test_database_url(f'{tmp_path}/kb.db'))
     source = tmp_path / 'input'
     source.mkdir()
     return source, engine, tmp_path / 'attachments'
@@ -44,7 +44,7 @@ def test_import_preserves_ocr_image_source_and_is_hash_idempotent(import_target)
     (source / '银剑_1_作者_来自小红书网页版.png').write_bytes(PNG)
     (source / '知识.md').write_text('# 非金属金属\n薄涂。')
     ocr_text = '底色 AK11190\n' + '高光需要保留暗面。' * 180
-    result = import_directory(source, str(engine.url), storage, markdown=['知识.md'],
+    result = import_directory(source, engine.url.render_as_string(hide_password=False), storage, markdown=['知识.md'],
                               ocr=lambda path: ocr_text)
     assert result['counts']['imported'] == 2
     with Session(engine) as db:
@@ -59,7 +59,7 @@ def test_import_preserves_ocr_image_source_and_is_hash_idempotent(import_target)
         assert (storage / image.attachments[0].storage_name).read_bytes() == PNG
     # A renamed byte-identical image is still the same source.
     next(source.glob('*.png')).rename(source / '改名.png')
-    again = import_directory(source, str(engine.url), storage, markdown=['知识.md'],
+    again = import_directory(source, engine.url.render_as_string(hide_password=False), storage, markdown=['知识.md'],
                              ocr=lambda path: pytest.fail('duplicate OCR should be skipped'))
     assert again['counts']['unchanged'] == 2
     with Session(engine) as db:
@@ -73,7 +73,7 @@ def test_ocr_failure_has_no_partial_database_or_attachment_writes(import_target)
     (source / '坏.png').write_bytes(PNG)
     def unavailable(path):
         raise RuntimeError('OCR unavailable')
-    result = import_directory(source, str(engine.url), storage, ocr=unavailable)
+    result = import_directory(source, engine.url.render_as_string(hide_password=False), storage, ocr=unavailable)
     assert result['counts']['failed'] == 1
     assert result['files'][0]['ocr_status'] == 'failed'
     with Session(engine) as db:
@@ -86,13 +86,13 @@ def test_ocr_empty_is_explicit_and_not_invented(import_target):
     from scripts.import_nmm import import_directory
     source, engine, storage = import_target
     (source / '纯图.png').write_bytes(PNG)
-    result = import_directory(source, str(engine.url), storage, ocr=lambda path: '')
+    result = import_directory(source, engine.url.render_as_string(hide_password=False), storage, ocr=lambda path: '')
     assert result['counts']['imported'] == 1
     assert result['files'][0]['ocr_status'] == 'empty'
     with Session(engine) as db:
         row = db.scalar(select(Technique))
         assert '未提取到可识别文字' in row.summary
-        assert '视觉描述尚未生成' in row.summary
+        assert '模型视觉推断如有生成，将单独标注' in row.summary
 
 
 def test_index_failure_rolls_back_source_file_and_record(import_target, monkeypatch):
@@ -103,7 +103,7 @@ def test_index_failure_rolls_back_source_file_and_record(import_target, monkeypa
     def fail(*args, **kwargs):
         raise RuntimeError('index failed')
     monkeypatch.setattr(app.ingestion, 'chunk_record', fail)
-    result = import_directory(source, str(engine.url), storage, ocr=lambda path: '原文')
+    result = import_directory(source, engine.url.render_as_string(hide_password=False), storage, ocr=lambda path: '原文')
     assert result['counts']['failed'] == 1
     with Session(engine) as db:
         assert db.scalar(select(func.count()).select_from(Technique)) == 0
@@ -128,7 +128,7 @@ def test_cli_dry_run_writes_only_report_and_nonzero_on_failure(tmp_path):
     source.mkdir()
     (source / '图.png').write_bytes(PNG)
     report = tmp_path / 'report.json'
-    args = ['--directory', str(source), '--database-url', f'sqlite:///{tmp_path}/missing.db',
+    args = ['--directory', str(source), '--database-url', test_database_url(f'{tmp_path}/missing.db'),
             '--storage-dir', str(tmp_path / 'attachments'), '--report', str(report)]
     assert main(args) == 0
     assert report.exists()

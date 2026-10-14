@@ -2,6 +2,7 @@
 from sqlalchemy import ForeignKey, Integer, JSON, String, Text, UniqueConstraint, Index
 from sqlalchemy.orm import Mapped, mapped_column
 from .models import Base
+from pgvector.sqlalchemy import Vector
 
 
 class Document(Base):
@@ -35,7 +36,7 @@ class Embedding(Base):
     status: Mapped[str] = mapped_column(String(20), default='pending')
     model: Mapped[str | None] = mapped_column(String(200), nullable=True)
     dimensions: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    vector: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    vector: Mapped[list | None] = mapped_column(Vector(), nullable=True)
     content_hash: Mapped[str] = mapped_column(String(64))
 
 

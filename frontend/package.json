@@ -7,12 +7,16 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b",
-    "test": "vitest run"
+    "test": "vitest run",
+    "format": "prettier --write src vite.config.ts package.json tsconfig.json",
+    "format:check": "prettier --check src vite.config.ts package.json tsconfig.json"
   },
   "dependencies": {
+    "@tanstack/react-query": "^5.104.2",
+    "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "lucide-react": "^0.468.0"
+    "react-router": "^8.4.0"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.6.3",
@@ -22,8 +26,14 @@
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
     "jsdom": "^26.0.0",
+    "prettier": "^3.9.10",
     "typescript": "~5.7.3",
     "vite": "^6.0.5",
     "vitest": "^4.1.11"
+  },
+  "prettier": {
+    "singleQuote": true,
+    "semi": false,
+    "trailingComma": "all"
   }
 }
