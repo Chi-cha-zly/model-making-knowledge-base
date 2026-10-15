@@ -18,6 +18,7 @@ dependencies = [
   "filelock>=3.16,<4",
   "langchain>=1.4,<2",
   "langgraph>=1.2,<2",
+  "pillow>=12.3,<13",
 ]
 
 [project.optional-dependencies]

@@ -31,6 +31,7 @@ from ..evaluation import export_evaluation, validate_evaluation_backup, restore_
 from ..experiments import export_experiments, validate_experiment_backup, restore_experiments
 from .ingestion import IngestionService
 from ..job_models import Job
+from ..nmm.models import NmmProject
 from ..vision_models import ImageAnalysis, ImageDescription
 from ..content import content_adapter, legacy_steps_to_blocks, image_ids
 from .serializers import _source_out, _technique_out, _product_out, _attachment_out
@@ -52,6 +53,22 @@ class BackupService:
         self.engine = engine
         self.storage = storage
         self.backup_limit = backup_limit
+
+    def ensure_nmm_idle(self):
+        """NMM works are independent of catalogue archives and must not be interrupted."""
+        with Session(self.engine) as db:
+            active_job = db.scalar(
+                select(Job.id)
+                .where(Job.kind == 'nmm', Job.status.in_(('queued', 'running')))
+                .limit(1)
+            )
+            active_project = db.scalar(
+                select(NmmProject.id)
+                .where(NmmProject.status.in_(('generating', 'planning', 'rendering')))
+                .limit(1)
+            )
+            if active_job is not None or active_project is not None:
+                raise HTTPException(409, '请先停止正在执行的 NMM 项目，再恢复知识库备份。')
 
     def export_backup(self):
         storage, engine = self.storage, self.engine
@@ -134,6 +151,7 @@ class BackupService:
             return archive_path
 
     def restore_backup_archive(self, upload_dir: Path):
+        self.ensure_nmm_idle()
         storage, engine = self.storage, self.engine
         backup_limit = self.backup_limit
         archive_path = upload_dir / 'backup.zip'
@@ -368,9 +386,9 @@ class BackupService:
                         restore_evaluation(db, data)
                         if data.get('version', 1) >= 4:
                             # Restored experiment IDs may repeat; stale idempotency keys must not bind to new rows.
-                            db.execute(delete(Job))
+                            db.execute(delete(Job).where(Job.kind != 'nmm'))
                         else:
-                            db.execute(delete(Job).where(Job.kind != 'experiment'))
+                            db.execute(delete(Job).where(Job.kind.not_in(('experiment', 'nmm'))))
                         restore_experiments(db, data)
                         db.flush()
                         db.add_all(ImageAnalysis(**item) for item in restored_analyses)

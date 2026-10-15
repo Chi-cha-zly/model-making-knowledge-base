@@ -16,6 +16,8 @@ from app import (  # noqa: F401 — register every domain table in Base.metadata
 )
 
 
+from app.nmm import models as nmm_models  # noqa: F401 — register NMM tables
+
 config = context.config
 if config.config_file_name:
     fileConfig(config.config_file_name)

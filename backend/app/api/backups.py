@@ -29,9 +29,10 @@ async def restore_backup(
     request: Request, file: UploadFile = File(...), service: BackupService = Depends(get_backups)
 ):
     state = request.app.state
-    async with state.chat.lock:
+    async with state.chat.lock, state.jobs.lock:
         if state.chat.has_active() or state.experiments.has_active():
             raise HTTPException(409, '请先停止正在生成的对话和实验，再恢复备份。')
+        service.ensure_nmm_idle()
         with TemporaryDirectory(dir=state.storage, prefix='backup-upload-') as name:
             total = 0
             with (Path(name) / 'backup.zip').open('wb') as output:

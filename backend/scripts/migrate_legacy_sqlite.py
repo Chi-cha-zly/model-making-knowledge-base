@@ -15,6 +15,7 @@ from pgvector.sqlalchemy import Vector as Vector  # registers PostgreSQL reflect
 from app.content import legacy_steps_to_blocks
 from app.db import create_db_engine, init_db
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.ddl import sort_tables
 from app.services.ingestion import IngestionService
 
 
@@ -34,12 +35,15 @@ def copy_legacy_database(
     source_meta, target_meta = MetaData(), MetaData()
     source_meta.reflect(source)
     target_meta.reflect(target)
-    unsupported = set(source_meta.tables) - set(target_meta.tables) - {'alembic_version'}
-    if unsupported:
-        raise ValueError('Unsupported source tables: ' + ', '.join(sorted(unsupported)))
+    # SQLite predates NMM and has no defined NMM file/reference migration format.
+    unsupported = (set(source_meta.tables) - set(target_meta.tables) - {'alembic_version'}) | (
+        set(source_meta.tables) & {'nmm_projects', 'nmm_assets', 'nmm_plans', 'nmm_steps'}
+    )
     records = {}
     placed = []
     try:
+        if unsupported:
+            raise ValueError('Unsupported source tables: ' + ', '.join(sorted(unsupported)))
         with source.connect() as conn:
             conn.exec_driver_sql('BEGIN')
             for name, table in source_meta.tables.items():
@@ -79,12 +83,18 @@ def copy_legacy_database(
             'attachments': len(files),
         }
         with target.begin() as conn:
-            tables = [t for t in target_meta.sorted_tables if t.name != 'alembic_version']
-            for table in tables:
+            # Emptiness applies to the entire target, including newer domains.
+            # It needs no dependency ordering and must not skip non-source tables.
+            for table in target_meta.tables.values():
+                if table.name == 'alembic_version':
+                    continue
                 if conn.execute(select(table).limit(1)).first():
                     raise ValueError('Target database must be empty')
             if not apply:
                 return report
+            # Reflected NMM tables contain a real project/asset FK cycle. NMM is
+            # unsupported above; sort only the tables this legacy input copies.
+            tables = sort_tables([target_meta.tables[name] for name in records])
             target_attachments.parent.mkdir(parents=True, exist_ok=True)
             with TemporaryDirectory(
                 dir=target_attachments.parent, prefix='legacy-stage-'
