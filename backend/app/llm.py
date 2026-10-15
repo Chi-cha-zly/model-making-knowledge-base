@@ -6,6 +6,7 @@ from contextlib import aclosing, asynccontextmanager
 from time import perf_counter
 
 import httpx
+from urllib.parse import urlparse
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langsmith import trace as smith_trace, tracing_context
 
@@ -53,6 +54,9 @@ def text_content(content):
     return ''
 
 
+RESPONSES_TERMINAL_EVENTS = ('response.completed', 'response.failed')
+
+
 class _CompleteSSEStream(httpx.AsyncByteStream):
     """Require a complete SSE terminator while leaving model parsing to the SDK."""
 
@@ -63,13 +67,19 @@ class _CompleteSSEStream(httpx.AsyncByteStream):
         # HTTPX handles decompression, UTF-8 boundaries and CR/LF line endings.
         # Keep only a small terminator candidate, never a copy of the full answer.
         candidate = ''
+        event = ''
         async for line in self.response.aiter_lines():
             if line.startswith('data:'):
                 value = line[5:].removeprefix(' ')
                 candidate = value if not candidate and value == '[DONE]' else 'other'
+            elif line.startswith('event:'):
+                event = line[6:].strip()
             elif not line:
-                done = candidate == '[DONE]'
-                candidate = ''
+                # Chat Completions ends with [DONE]; the Responses API with a terminal event.
+                if event == 'response.incomplete':
+                    raise ProviderError('模型输出被截断；已保留部分文本，请缩小问题范围后重试。')
+                done = candidate == '[DONE]' or event in RESPONSES_TERMINAL_EVENTS
+                candidate = event = ''
                 yield b'\n'
                 if done:
                     return
@@ -303,7 +313,7 @@ class LangChainProvider:
         return cls()
 
     @asynccontextmanager
-    async def _model(self, model, *, streaming=False):
+    async def _model(self, model, *, streaming=False, tools=False):
         if not self.configured:
             raise ProviderError('尚未配置模型；请设置 AI_BASE_URL、AI_MODEL 和 AI_API_KEY。')
         responses = []
@@ -318,21 +328,21 @@ class LangChainProvider:
             event_hooks={'response': [remember]},
         ) as client:
             try:
+                # Tool calling with reasoning needs OpenAI's Responses API; compatible
+                # services may lack /responses, so they get tools without reasoning.
+                responses_api = tools and self.official_openai
+                reasoning = self.reasoning_effort if (responses_api or not tools) else None
                 yield ChatOpenAI(
                     model=model,
                     api_key=self.api_key or 'local-no-key',
                     base_url=self.base_url,
-                    **(
-                        {'reasoning_effort': self.reasoning_effort}
-                        if self.reasoning_effort is not None
-                        else {}
-                    ),
+                    **({'reasoning_effort': reasoning} if reasoning is not None else {}),
                     max_tokens=self.max_output_tokens,
                     temperature=None,
                     max_retries=0,
                     timeout=90,
                     stream_usage=True,
-                    use_responses_api=False,
+                    use_responses_api=responses_api,
                     http_async_client=client,
                 )
             finally:
@@ -415,6 +425,17 @@ class LangChainProvider:
             if run:
                 run.end(outputs=output)
             return output
+
+    @asynccontextmanager
+    async def agent_models(self):
+        """Streaming model for the main agent and a plain one for the research sub-agent."""
+        async with self._model(self.model, streaming=True, tools=True) as main:
+            async with self._model(self.model, tools=True) as research:
+                yield main, research
+
+    @property
+    def official_openai(self):
+        return urlparse(self.base_url).hostname == 'api.openai.com'
 
     async def stream(self, messages):
         async with self._trace(messages, self.model) as run:

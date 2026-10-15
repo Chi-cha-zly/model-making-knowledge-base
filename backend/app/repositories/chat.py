@@ -3,7 +3,7 @@
 from datetime import datetime
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
-from ..chat_models import Conversation, Message, Run
+from ..chat_models import AgentTrace, Conversation, Message, Run
 from ..models import now
 from ..services.errors import ServiceError
 
@@ -155,6 +155,29 @@ class ChatRepository:
             turns = self.history_turns(db, run)
             db.commit()
             return record(run), turns
+
+    def set_citations(self, rid, citations):
+        """Agent runs learn their evidence only after tool calls finish."""
+        with Session(self.engine) as db:
+            run = get(db, Run, rid)
+            if run.status in ACTIVE:
+                run.citations, run.updated_at = citations, now()
+                db.commit()
+
+    def save_trace(self, rid, steps):
+        with Session(self.engine) as db:
+            row = db.get(AgentTrace, rid)
+            if row is None:
+                db.add(AgentTrace(run_id=rid, steps=steps))
+            else:
+                row.steps = steps
+            db.commit()
+
+    def trace(self, rid):
+        with Session(self.engine) as db:
+            get(db, Run, rid)
+            row = db.get(AgentTrace, rid)
+            return {'run_id': rid, 'steps': row.steps if row else []}
 
     def flush_content(self, rid, content):
         with Session(self.engine) as db:

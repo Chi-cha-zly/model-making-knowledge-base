@@ -334,3 +334,14 @@ def revalidate(db, hits, refs):
         )
         valid_refs[hit['key']] = ref
     return output, valid_refs
+
+
+def document_text(db, key, limit=6000):
+    """Full active-version text of one currently visible record, or '' if not visible."""
+    parts = db.scalars(
+        select(Chunk.content)
+        .join(Document)
+        .where(Document.record_key == key, visible_chunk())
+        .order_by(Chunk.ordinal)
+    )
+    return '\n'.join(part for part in parts if part.strip())[:limit]

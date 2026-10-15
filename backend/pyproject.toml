@@ -16,6 +16,8 @@ dependencies = [
   "langsmith>=0.14.6",
   "keyring>=25,<26",
   "filelock>=3.16,<4",
+  "langchain>=1.4,<2",
+  "langgraph>=1.2,<2",
 ]
 
 [project.optional-dependencies]

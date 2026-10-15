@@ -514,3 +514,19 @@
     margin-left: -9px;
   }
 }
+.agent-trace {
+  margin-top: 14px;
+  font-size: 12px;
+}
+.agent-trace summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+.agent-trace ol {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  line-height: 1.6;
+}
+.agent-trace .trace-invalid_citations {
+  color: var(--danger);
+}

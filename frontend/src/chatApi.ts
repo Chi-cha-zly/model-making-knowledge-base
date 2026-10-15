@@ -39,8 +39,21 @@ export type ConversationDetail = Conversation & {
 export type AgentConfig = {
   configured: boolean
   model: string | null
+  mode?: 'rag' | 'agent'
   message: string
 }
+export type TraceStep =
+  | { kind: 'search'; query: string; strategy: string; keys: string[] }
+  | {
+      kind: 'research'
+      task: string
+      searches: number
+      covered: string[]
+      missing: string[]
+    }
+  | { kind: 'read'; key: string; found: boolean }
+  | { kind: 'invalid_citations'; keys: string[] }
+export type AgentTrace = { run_id: number; steps: TraceStep[] }
 async function request<T>(
   path: string,
   method = 'GET',
@@ -81,6 +94,7 @@ export const chatApi = {
   steer: (id: number, content: string, request_id: string) =>
     request<Run>(`/runs/${id}/steer`, 'POST', { content, request_id }),
   run: (id: number) => request<Run>(`/runs/${id}`),
+  trace: (id: number) => request<AgentTrace>(`/runs/${id}/trace`),
 }
 export const isActive = (run?: Run) =>
   run?.status === 'queued' || run?.status === 'running'

@@ -89,6 +89,9 @@ def build_runtime(
         rerank_candidates=candidates,
     )
     chat.retrieval = retrieval
+    if source.get('CHAT_MODE', 'rag') not in ('rag', 'agent'):
+        raise ValueError('CHAT_MODE must be rag or agent')
+    chat.agent_mode = source.get('CHAT_MODE', 'rag') == 'agent'
     private_path = (
         Path(settings_path).resolve()
         if settings_path is not None

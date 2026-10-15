@@ -19,6 +19,7 @@ def install_chat(app, service):
         return {
             'configured': configured,
             'model': service.provider.model,
+            'mode': 'agent' if service.uses_agent else 'rag',
             'message': '模型已配置（连接状态将在生成时检查）。'
             if configured
             else '请在项目根目录 .env 中配置 AI_BASE_URL、AI_MODEL 和 AI_API_KEY；本地服务可省略密钥。',
@@ -56,6 +57,10 @@ def install_chat(app, service):
     @router.get('/runs/{rid}')
     async def run(rid: int):
         return service.snapshot(rid)
+
+    @router.get('/runs/{rid}/trace')
+    async def trace(rid: int):
+        return service.repository.trace(rid)
 
     @router.get('/runs/{rid}/events')
     async def events(rid: int):

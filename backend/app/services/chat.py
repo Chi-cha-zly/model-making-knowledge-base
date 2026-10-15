@@ -5,6 +5,13 @@ from contextlib import aclosing, asynccontextmanager, suppress
 import hashlib
 import json
 from time import monotonic
+from ..agents.knowledge import (
+    EvidenceCollector,
+    build_main_agent,
+    final_citations,
+    stream_answer,
+    unknown_citations,
+)
 from ..chat_context import bounded_evidence, compose_messages
 from ..errors import ProviderError
 from ..prompts import SYSTEM
@@ -13,8 +20,10 @@ from .errors import ServiceError
 
 
 class ChatService:
-    def __init__(self, engine, provider, retrieval=None):
+    def __init__(self, engine, provider, retrieval=None, agent_mode=False):
         self.engine, self.provider, self.retrieval = engine, provider, retrieval
+        # Agent mode: tool-calling agents decide when and what to retrieve.
+        self.agent_mode = agent_mode
         self.repository = ChatRepository(engine)
         self.lock = asyncio.Lock()
         self.tasks = {}
@@ -85,17 +94,23 @@ class ChatService:
             last_flush = monotonic()
             return True
 
+        collector = EvidenceCollector() if self.uses_agent else None
         try:
-            query = self.retrieval_queries.get(rid)
-            citations = None
-            if query is not None:
-                # This await belongs to the cancellable queued run, outside the API lock.
-                result = await self.retrieval.search(query[0], k=6, semantic_query=query[1])
-                citations = bounded_evidence(self.retrieval.revalidate(result).hits)
-            run, turns = self.repository.begin_generation(rid, citations)
+            if collector is not None:
+                run, turns = self.repository.begin_generation(rid)
+                answer = self._agent_answer(turns, collector)
+            else:
+                query = self.retrieval_queries.get(rid)
+                citations = None
+                if query is not None:
+                    # This await belongs to the cancellable queued run, outside the API lock.
+                    result = await self.retrieval.search(query[0], k=6, semantic_query=query[1])
+                    citations = bounded_evidence(self.retrieval.revalidate(result).hits)
+                run, turns = self.repository.begin_generation(rid, citations)
+                messages = compose_messages(self.system_prompt, run['citations'], turns)
+                answer = self.provider.stream(messages)
             content = persisted = run['content']
-            messages = compose_messages(self.system_prompt, run['citations'], turns)
-            async with aclosing(self.provider.stream(messages)) as stream:
+            async with aclosing(answer) as stream:
                 try:
                     while True:
                         if pending is None:
@@ -126,12 +141,16 @@ class ChatService:
                         with suppress(asyncio.CancelledError, StopAsyncIteration):
                             await pending
             flush()
+            self._agent_citations(rid, collector, content)
             self.repository.finish(rid)
         except asyncio.CancelledError:
             flush()
+            # Partial answers keep their verified evidence too; status is still active here.
+            self._agent_citations(rid, collector, content)
             raise
         except Exception as exc:
             flush()
+            self._agent_citations(rid, collector, content)
             self.repository.finish(
                 rid,
                 str(exc)
@@ -141,6 +160,41 @@ class ChatService:
         finally:
             self.tasks.pop(rid, None)
             self.retrieval_queries.pop(rid, None)
+            if collector is not None:
+                # Diagnostics only: a failed write must not mask the run outcome.
+                with suppress(Exception):
+                    self.repository.save_trace(rid, collector.trace)
+
+    def _agent_citations(self, rid, collector, content):
+        if collector is None:
+            return
+        with suppress(Exception):
+            citations = final_citations(self.retrieval, collector, content)
+            self.repository.set_citations(rid, citations)
+            invalid = unknown_citations(content, citations)
+            if invalid:
+                collector.step('invalid_citations', keys=invalid)
+
+    @property
+    def uses_agent(self):
+        return self.agent_mode and self.retrieval is not None
+
+    async def _agent_answer(self, turns, collector):
+        # Same history budget as the RAG path, without its evidence system message.
+        history = compose_messages('', [], turns)[1:-1]
+        try:
+            async with self.provider.agent_models() as (main, research):
+                agent = build_main_agent(
+                    main, research, self.retrieval, collector, self.system_prompt
+                )
+                async for text in stream_answer(agent, history):
+                    yield text
+        except (ProviderError, asyncio.CancelledError, GeneratorExit):
+            raise
+        except Exception as exc:
+            from ..llm import safe_error
+
+            raise safe_error(exc) from None
 
     async def create_run(self, cid, data, action='start', prior_id=None):
         fingerprint = hashlib.sha256(
@@ -177,7 +231,7 @@ class ChatService:
         query = '\n'.join(reversed(recent))[-64000:]
         citations = [] if self.retrieval is not None else self.repository.evidence(query)
         output = self.repository.create_run(cid, data, action, prior_id, fingerprint, citations)
-        if self.retrieval is not None:
+        if self.retrieval is not None and not self.uses_agent:
             self.retrieval_queries[output['id']] = (query, latest_question)
         self.tasks[output['id']] = asyncio.create_task(self.generate(output['id']))
         return output

@@ -446,3 +446,45 @@ def test_stream_bad_payloads_are_sanitized(payload):
     )
     with warning:
         asyncio.run(go())
+
+
+def test_agent_models_use_responses_api_only_for_official_openai():
+    from app import llm
+
+    async def models(base_url):
+        provider = llm.LangChainProvider(
+            settings=settings(AI_BASE_URL=base_url, AI_REASONING_EFFORT='low')
+        )
+        async with provider.agent_models() as (main, research):
+            return [(m.use_responses_api, m.reasoning_effort) for m in (main, research)]
+
+    assert asyncio.run(models('https://api.openai.com/v1')) == [(True, 'low')] * 2
+    # Compatible services may lack /responses: tools without reasoning on Chat Completions.
+    assert asyncio.run(models('https://model.invalid/v1')) == [(False, None)] * 2
+
+
+@pytest.mark.parametrize(
+    'body,complete',
+    [
+        (
+            b'event: response.output_text.delta\ndata: {}\n\nevent: response.completed\ndata: {}\n\n',
+            True,
+        ),
+        (b'event: response.output_text.delta\ndata: {}\n\n', False),
+        (b'event: response.incomplete\ndata: {}\n\n', False),
+        (b'data: {}\n\ndata: [DONE]\n\n', True),
+    ],
+)
+def test_sse_stream_requires_a_terminal_event(body, complete):
+    from app import llm
+    from app.errors import ProviderError
+
+    async def read():
+        response = httpx.Response(200, content=body)
+        return b''.join([part async for part in llm._CompleteSSEStream(response)])
+
+    if complete:
+        assert asyncio.run(read())
+    else:
+        with pytest.raises(ProviderError):
+            asyncio.run(read())

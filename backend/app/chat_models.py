@@ -65,3 +65,11 @@ class Run(Base):
     citations: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class AgentTrace(Base):
+    """Diagnostic tool-call steps of one agent run; not part of backups."""
+
+    __tablename__ = 'agent_traces'
+    run_id: Mapped[int] = mapped_column(ForeignKey('runs.id', ondelete='CASCADE'), primary_key=True)
+    steps: Mapped[list] = mapped_column(JSON, default=list)

@@ -1,3 +1,4 @@
+import AgentTrace from '../../components/AgentTrace'
 import RetrievedImages from '../../components/RetrievedImages'
 import { useLocation, useNavigate } from 'react-router'
 import {
@@ -535,6 +536,9 @@ export default function ChatWorkbench({
                       </div>
                       {run?.error && (
                         <p className="chat-run-error">{run.error}</p>
+                      )}
+                      {run && config?.mode === 'agent' && !isActive(run) && (
+                        <AgentTrace runId={run.id} />
                       )}
                       {run && !!run.citations.length && (
                         <div className="chat-citations">
