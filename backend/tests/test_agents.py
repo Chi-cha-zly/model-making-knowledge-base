@@ -440,3 +440,50 @@ def test_live_progress_reports_current_search_and_clears_after_run():
             engine.dispose()
 
     asyncio.run(scenario())
+
+
+def test_concurrent_research_calls_keep_their_own_search_steps():
+    from app.agents.knowledge import AgentOptions
+
+    retrieval = FakeRetrieval({'a': ['technique:1'], 'b': ['technique:2']})
+
+    def search_for(messages):
+        task = messages[-1].content
+        return call('search_library', {'query': task}, id=f's-{task}')
+
+    research_model = scripted(search_for, search_for)
+    both = AIMessage(
+        content='',
+        tool_calls=[
+            {'name': 'research', 'args': {'task': 'a'}, 'id': 'r1'},
+            {'name': 'research', 'args': {'task': 'b'}, 'id': 'r2'},
+        ],
+    )
+    main_model = scripted(both, AIMessage(content='完成'))
+    collector = EvidenceCollector()
+    agent = build_main_agent(
+        main_model, research_model, retrieval, collector, '规则', AgentOptions(rule_report=True)
+    )
+    asyncio.run(collect(agent, '问题'))
+    observations = {
+        m.tool_call_id: json.loads(m.content)
+        for m in main_model.seen[1]
+        if isinstance(m, ToolMessage)
+    }
+    assert [c['aspect'] for c in observations['r1']['covered']] == ['a']
+    assert [c['aspect'] for c in observations['r2']['covered']] == ['b']
+    research_steps = [s for s in collector.trace if s['kind'] == 'research']
+    assert [s['searches'] for s in research_steps] == [1, 1]
+    # Rule reports do not turn every hit into a citation.
+    assert collector.used == set()
+
+
+def test_research_reasoning_setting_is_validated():
+    import pytest
+
+    from app.services.runtime import research_reasoning
+
+    assert research_reasoning('') is None and research_reasoning('Auto') is None
+    assert research_reasoning(' none ') == 'none'
+    with pytest.raises(ValueError):
+        research_reasoning('fast')

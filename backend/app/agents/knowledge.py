@@ -11,6 +11,7 @@ Design:
 
 import json
 import re
+from contextvars import ContextVar
 from time import perf_counter
 from dataclasses import dataclass, field
 
@@ -39,6 +40,9 @@ MAX_SEARCHES = 4
 MAX_RESEARCH_CALLS = 3
 MAX_MAIN_MODEL_CALLS = 6
 CITATION = re.compile(r'\[(technique|product):(\d+)\]')
+# Search steps of the research call currently running in this task. Concurrent tool
+# calls run in separate tasks with copied contexts, so their steps never mix.
+_research_steps: ContextVar[list | None] = ContextVar('research_steps', default=None)
 
 
 @dataclass(frozen=True)
@@ -154,6 +158,9 @@ async def run_search(retrieval, collector, query, source='research'):
         ms=round((perf_counter() - started) * 1000),
         source=source,
     )
+    own = _research_steps.get()
+    if own is not None:
+        own.append(collector.trace[-1])
     return format_hits(result.hits)
 
 
@@ -175,7 +182,7 @@ def rule_report(search_steps, task):
     )
 
 
-def research_observation(report, collector):
+def research_observation(report, collector, mark_used=True):
     """Drop evidence keys the sub-agent never actually retrieved."""
     known = collector.hits
     covered = []
@@ -186,7 +193,8 @@ def research_observation(report, collector):
         else:
             report.missing.append(item.aspect)
     used = list(dict.fromkeys(key for item in covered for key in item['evidence_keys']))
-    collector.used.update(used)
+    if mark_used:
+        collector.used.update(used)
     return {
         'covered': covered,
         'missing': report.missing,
@@ -207,32 +215,31 @@ def build_main_agent(
     async def research(task: str) -> str:
         """让检索助手在知识库中查资料。task 写清需要核实的全部条件。"""
         collector.activity = f'检索助手正在规划：{task[:40]}'
-        before = len(collector.trace)
-        first_result = len(collector.results)
-        result = await research_agent.ainvoke(
-            {'messages': [{'role': 'user', 'content': task[:2000]}]}
-        )
+        token = _research_steps.set([])
+        try:
+            result = await research_agent.ainvoke(
+                {'messages': [{'role': 'user', 'content': task[:2000]}]}
+            )
+            searches = _research_steps.get()
+        finally:
+            _research_steps.reset(token)
         report = result.get('structured_response')
         if options.rule_report:
-            searches = [step for step in collector.trace[before:] if step['kind'] == 'search']
             report = rule_report(searches, task)
         elif not isinstance(report, EvidenceReport):
-            # Limits reached before a report: keep what was found, flag the rest.
-            found = list(
-                dict.fromkeys(
-                    hit['key'] for r in collector.results[first_result:] for hit in r.hits
-                )
-            )
+            # Limits reached before a report: keep what this call found, flag the rest.
+            found = list(dict.fromkeys(key for step in searches for key in step['keys']))
             report = EvidenceReport(
                 covered=[CoveredAspect(aspect=task[:200], evidence_keys=found)] if found else [],
                 missing=[] if found else [task[:200]],
                 summary='检索助手未完成结构化报告，以下为已检索到的资料。',
             )
-        observation = research_observation(report, collector)
+        # Rule reports list every reranked hit; only cited ones should become citations.
+        observation = research_observation(report, collector, mark_used=not options.rule_report)
         collector.step(
             'research',
             task=task[:500],
-            searches=len(collector.trace) - before,
+            searches=len(searches),
             covered=[item['aspect'] for item in observation['covered']],
             missing=observation['missing'],
         )

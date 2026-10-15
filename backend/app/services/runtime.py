@@ -34,6 +34,23 @@ class Runtime:
     retrieval: RetrievalService
 
 
+REASONING_LEVELS = ('none', 'minimal', 'low', 'medium', 'high', 'xhigh')
+
+
+def research_reasoning(value):
+    """Validated sub-agent override; empty or auto keeps AI_REASONING_EFFORT.
+
+    Only official OpenAI endpoints receive it (Responses API); compatible
+    services get tool calls without reasoning_effort.
+    """
+    value = value.strip().lower()
+    if value in ('', 'auto'):
+        return None
+    if value not in REASONING_LEVELS:
+        raise ValueError('AGENT_RESEARCH_REASONING must be one of: ' + ', '.join(REASONING_LEVELS))
+    return value
+
+
 def build_runtime(
     database_url=None,
     storage_dir=None,
@@ -103,7 +120,7 @@ def build_runtime(
         max_searches=searches,
         parallel_search=source.get('AGENT_PARALLEL_SEARCH', 'false').lower() == 'true',
         direct_search=source.get('AGENT_DIRECT_SEARCH', 'false').lower() == 'true',
-        research_reasoning=source.get('AGENT_RESEARCH_REASONING') or None,
+        research_reasoning=research_reasoning(source.get('AGENT_RESEARCH_REASONING', '')),
         rule_report=source.get('AGENT_RULE_REPORT', 'false').lower() == 'true',
     )
     private_path = (
