@@ -9,7 +9,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .embedding_jobs import _visible
-from .ingestion import ingest_record
+from .services.ingestion import IngestionService
 from .ingestion_models import Chunk, Document, DocumentSource
 from .models import Attachment, Product, Source, Technique
 from .services.ocr import local_ocr, recognize_local
@@ -162,7 +162,7 @@ def _publish(engine, storage, attachment_id, identity, snapshot, model, ocr_text
                 raise ValueError('Owner changed during publication')
             # Analysis and all derived versions commit together; strict failures
             # roll back the new analysis and every already-built owner version.
-            ingest_record(db, row, strict=True)
+            IngestionService(db).reindex(row, strict=True)
         return 'ready'
 
 

@@ -17,6 +17,7 @@ from ..schemas import (
     TechniquePatch,
 )
 from .errors import ServiceError
+from .ingestion import IngestionService
 from .serializers import _source_out, _technique_out, _product_out
 
 
@@ -64,12 +65,17 @@ class CatalogService:
             raise ServiceError(422, 'attachment_ids must refer to existing, active attachments')
         return rows
 
-    def _save(self):
+    def _save(self, record=None):
         try:
+            if record is not None:
+                IngestionService(self.repository.session).reindex(record)
             self.repository.commit()
         except IntegrityError as exc:
             self.repository.rollback()
             raise ServiceError(409, 'Duplicate SKU or alias') from exc
+        except Exception:
+            self.repository.rollback()
+            raise
 
     def list_sources(self):
         return [_source_out(x) for x in self.repository.list(Source)]
@@ -118,7 +124,7 @@ class CatalogService:
         )
         row = Technique(**values, sources=sources, attachments=self._attachments(attachment_ids))
         self.repository.add(row)
-        self._save()
+        self._save(row)
         return _technique_out(row)
 
     def get_technique(self, id: int):
@@ -141,7 +147,7 @@ class CatalogService:
                 row.attachments = self._attachments(value)
             else:
                 setattr(row, key, value)
-        self._save()
+        self._save(row)
         return _technique_out(row)
 
     def withdraw_technique(self, id: int):
@@ -161,7 +167,7 @@ class CatalogService:
         )
         _aliases(None, row, data.aliases)
         self.repository.add(row)
-        self._save()
+        self._save(row)
         return _product_out(row)
 
     def get_product(self, id: int):
@@ -181,7 +187,7 @@ class CatalogService:
             row.attachments = self._attachments(values['attachment_ids'])
         if 'aliases' in values or 'brand' in values:
             _aliases(None, row, values.get('aliases', [a.alias for a in row.aliases]))
-        self._save()
+        self._save(row)
         return _product_out(row)
 
     def withdraw_product(self, id: int):
@@ -217,5 +223,5 @@ class CatalogService:
         )
         item = Technique(title=title, summary=body, sources=[source])
         self.repository.add(item)
-        self._save()
+        self._save(item)
         return {'source': _source_out(source), 'technique': _technique_out(item)}

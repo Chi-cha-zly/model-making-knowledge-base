@@ -853,3 +853,85 @@ it('keeps the attached image in the editor if refreshing the catalogue fails', a
   )
   expect(current.attachment_ids).toEqual([8])
 })
+
+it('clears retrieval metadata on query edits and ignores an older search response', async () => {
+  const original = fetch
+  let release: (response: Response) => void = () => {}
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/search'))
+        return new Promise<Response>((resolve) => {
+          release = resolve
+        })
+      return original(input, init)
+    }),
+  )
+  const user = userEvent.setup()
+  render(<App />)
+  const field = await screen.findByRole('searchbox', { name: '搜索资料' })
+  await user.type(field, '旧查询')
+  await user.click(screen.getByRole('button', { name: '搜索' }))
+  await user.clear(field)
+  await user.type(field, '新查询')
+  release(
+    new Response(
+      JSON.stringify({
+        techniques: [],
+        products: [],
+        retrieval: {
+          requested_strategy: 'hybrid',
+          effective_strategy: 'bm25',
+          version: 'stale-version',
+          fallback_reason: 'timeout',
+          lexical_candidates: 1,
+          vector_candidates: 0,
+        },
+      }),
+    ),
+  )
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: '搜索' })).toBeEnabled(),
+  )
+  expect(screen.queryByText(/stale-version/)).not.toBeInTheDocument()
+  expect(screen.getByRole('heading', { name: '资料索引' })).toBeInTheDocument()
+  expect(
+    screen.getByRole('button', { name: /喷涂底漆前的表面清理/ }),
+  ).toBeInTheDocument()
+})
+
+it('displays current search metadata and removes it as soon as the search text changes', async () => {
+  const original = fetch
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).includes('/search')
+        ? response({
+            techniques: [technique],
+            products: [],
+            retrieval: {
+              requested_strategy: 'hybrid',
+              effective_strategy: 'bm25',
+              version: 'indexed-bm25-2',
+              fallback_reason: 'no_ready_vectors',
+              lexical_candidates: 3,
+              vector_candidates: 0,
+              latency_ms: 12,
+              embedding_ms: 0,
+            },
+          })
+        : original(input, init),
+    ),
+  )
+  const user = userEvent.setup()
+  render(<App />)
+  const field = await screen.findByRole('searchbox', { name: '搜索资料' })
+  await user.type(field, '底漆')
+  await user.click(screen.getByRole('button', { name: '搜索' }))
+  expect(await screen.findByText(/没有可用的匹配向量/)).toBeInTheDocument()
+  expect(screen.getByText(/实际策略：BM25/)).toBeInTheDocument()
+  expect(screen.getByText(/indexed-bm25-2/)).toBeInTheDocument()
+  expect(screen.getByText(/总耗时 12.0 ms/)).toBeInTheDocument()
+  await user.type(field, '新')
+  expect(screen.queryByText(/indexed-bm25-2/)).not.toBeInTheDocument()
+})

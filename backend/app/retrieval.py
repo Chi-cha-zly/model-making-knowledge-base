@@ -7,12 +7,12 @@ Internal documents retain full V2 evidence in ``text`` for fair baseline scoring
 from collections import Counter
 import math
 import re
-import unicodedata
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from .models import Product, Technique
+from .lexical import readable_excerpt, _normalize, _tokens, STOP_WORDS, STOP_PHRASES, TOKEN_RE  # noqa: F401
 
 RETRIEVAL_VERSION = 'v3-local-bm25-1'
 BASELINE_VERSION = 'v2-lexical'
@@ -27,30 +27,6 @@ SYNONYMS = (
     ('消光', '哑光', 'matte'),
     ('遮盖', '遮蔽', 'masking'),
 )
-STOP_WORDS = set(
-    '你好 请 请问 帮我 推荐 一下 模型 制作 方法 怎么 如何 什么 这个 那个 可以 应该 想要 我想 知道 更多 资料 参考 注意 安全 处理 入门 使用 的 是 有 吗 呢 吧 了 和 与 the a an and or how what to for of is please'.split()
-)
-STOP_PHRASES = sorted(STOP_WORDS | {'请帮我', '模型制作', '告诉我'}, key=lambda x: (-len(x), x))
-TOKEN_RE = re.compile(r'[a-z0-9]+(?:[-_][a-z0-9]+)*|[\u4e00-\u9fff]+')
-
-
-def readable_excerpt(value):
-    """Render structured evidence without dropping meaningful false/zero values."""
-    if value is None:
-        return ''
-    if isinstance(value, dict):
-        lines = []
-        for label, item in value.items():
-            rendered = readable_excerpt(item)
-            if rendered:
-                separator = '\n' if isinstance(item, (dict, list)) else ''
-                lines.append(f'{label}：{separator}{rendered}')
-        return '\n'.join(lines)
-    if isinstance(value, list):
-        return '\n'.join('- ' + text for item in value if (text := readable_excerpt(item)))
-    if isinstance(value, bool):
-        return '是' if value else '否'
-    return str(value).strip()
 
 
 def load_documents(db: Session) -> list[dict]:
@@ -109,32 +85,6 @@ def load_documents(db: Session) -> list[dict]:
                 }
             )
     return documents
-
-
-def _normalize(value):
-    return unicodedata.normalize('NFKC', value).casefold()
-
-
-def _tokens(text, *, single=False):
-    tokens = []
-    for word in TOKEN_RE.findall(_normalize(text)):
-        if word in STOP_WORDS:
-            continue
-        if re.fullmatch(r'[\u4e00-\u9fff]+', word):
-            if len(word) == 1:
-                if single:
-                    tokens.append(word)
-            else:
-                tokens.extend(
-                    word[i : i + 2]
-                    for i in range(len(word) - 1)
-                    if word[i : i + 2] not in STOP_WORDS
-                )
-                if len(word) > 2:
-                    tokens.append(word)
-        else:
-            tokens.append(word)
-    return tokens
 
 
 def _contains(text, term):
@@ -203,11 +153,11 @@ def _baseline(documents, query):
     return ranked
 
 
-def rank_documents(documents: list[dict], query: str, strategy='ranked', k=6) -> list[dict]:
+def rank_candidates(documents: list[dict], query: str, strategy='ranked', k=6) -> list[dict]:
     """Rank one already-authorized corpus snapshot. Scores are not probabilities."""
     if strategy not in ('baseline', 'ranked'):
         raise ValueError('Unknown retrieval strategy')
-    if not isinstance(k, int) or not 1 <= k <= 20:
+    if not isinstance(k, int) or isinstance(k, bool) or not 1 <= k <= 400:
         raise ValueError('k must be between 1 and 20')
     if strategy == 'baseline':
         ranked = _baseline(documents, query)
@@ -320,219 +270,19 @@ def rank_documents(documents: list[dict], query: str, strategy='ranked', k=6) ->
     ]
 
 
+def rank_documents(documents: list[dict], query: str, strategy='ranked', k=6) -> list[dict]:
+    if not isinstance(k, int) or isinstance(k, bool) or not 1 <= k <= 20:
+        raise ValueError('k must be between 1 and 20')
+    return rank_candidates(documents, query, strategy=strategy, k=k)
+
+
 ONLINE_RETRIEVAL_VERSION = 'p0-indexed-chunks-1'
 
 
 def search_documents(db: Session, query: str, k=6) -> list[dict]:
-    """Query persisted postings, then rank at most 200 matching chunks.
-
-    Authorization is evaluated before the SQL limit. Full-corpus snapshots remain
-    available only to the explicitly offline evaluation functions above.
-    """
-    from sqlalchemy import and_, or_, func, case
-    from .models import Source, Attachment
-    from .ingestion import index_terms
-    from .ingestion_models import Document, Chunk, Posting, DocumentSource
+    """Compatibility entry point for the indexed lexical strategy only."""
+    from .repositories.retrieval import lexical_search
 
     if not isinstance(k, int) or isinstance(k, bool) or not 1 <= k <= 20:
         raise ValueError('k must be between 1 and 20')
-    normalized = _normalize(query[-64000:]).strip()
-    cleaned = normalized
-    for phrase in STOP_PHRASES:
-        if re.fullmatch(r'[\u4e00-\u9fff]+', phrase):
-            cleaned = cleaned.replace(phrase, ' ')
-    words = set(_tokens(cleaned, single=len(cleaned.strip()) == 1))
-    if not words:
-        return []
-    for group in SYNONYMS:
-        if any(_contains(normalized, term) for term in group):
-            for term in group:
-                words.update(_tokens(term))
-    terms = {'t:' + word for word in words if len(word) <= 190}
-    for word in words:
-        if re.fullmatch(r'[a-z]{4,40}', word):
-            terms.update(term for term in index_terms(word) if term.startswith('f:'))
-    # Normalize separator variants without scanning every SKU in the catalog.
-    for token in re.findall(r'[a-z0-9]+(?:[\s_-]+[a-z0-9]+)*', normalized):
-        pieces = re.split(r'[\s_-]+', token)
-        for start in range(len(pieces)):
-            for end in range(start + 1, min(len(pieces), start + 4) + 1):
-                compact = ''.join(pieces[start:end])
-                if re.search(r'\d', compact):
-                    terms.add('s:' + compact)
-    # Long chat history remains bounded before building the IN expression.
-    terms = sorted(terms)[:1500]
-    valid_source = and_(Source.owner_id == 'local', Source.status == 'published')
-    valid_technique = (
-        select(Technique.id)
-        .where(
-            Technique.id == Document.record_id,
-            Technique.owner_id == 'local',
-            Technique.status == 'published',
-        )
-        .exists()
-    )
-    valid_product = (
-        select(Product.id)
-        .where(
-            Product.id == Document.record_id,
-            Product.owner_id == 'local',
-            Product.status == 'published',
-        )
-        .exists()
-    )
-    bound_source = (
-        select(DocumentSource.source_id)
-        .join(Source, Source.id == DocumentSource.source_id)
-        .where(
-            DocumentSource.document_id == Document.id,
-            DocumentSource.version == Chunk.version,
-            valid_source,
-        )
-        .exists()
-    )
-    current_image = or_(
-        Chunk.attachment_id.is_(None),
-        select(Attachment.id)
-        .where(
-            Attachment.id == Chunk.attachment_id,
-            Attachment.owner_id == 'local',
-            Attachment.status == 'published',
-            Attachment.sha256 == Chunk.payload['attachment_hash'].as_string(),
-        )
-        .exists(),
-    )
-    weight = func.sum(case((Posting.term.like('s:%'), 100), (Posting.term.like('t:%'), 3), else_=1))
-    statement = (
-        select(Chunk.id, weight.label('weight'))
-        .join(Posting, Posting.chunk_id == Chunk.id)
-        .join(Document, Document.id == Chunk.document_id)
-        .where(
-            Posting.term.in_(terms),
-            Chunk.version == Document.active_version,
-            bound_source,
-            current_image,
-            or_(
-                and_(Document.kind == 'technique', valid_technique),
-                and_(Document.kind == 'product', valid_product),
-            ),
-        )
-        .group_by(Chunk.id)
-        .order_by(weight.desc(), Chunk.id.desc())
-        .limit(200)
-    )
-    candidates = list(db.execute(statement))
-    if not candidates:
-        return []
-    chunks = {
-        row.id: row
-        for row in db.scalars(select(Chunk).where(Chunk.id.in_([x.id for x in candidates])))
-    }
-    # Short records retain their complete readable evidence. Only the bounded
-    # candidate document IDs participate in this second query; long documents
-    # keep their highest matching chunk as the excerpt.
-    document_ids = {chunk.document_id for chunk in chunks.values()}
-    short_ids = list(
-        db.scalars(
-            select(Chunk.document_id)
-            .join(Document, Document.id == Chunk.document_id)
-            .where(Chunk.document_id.in_(document_ids), Chunk.version == Document.active_version)
-            .group_by(Chunk.document_id)
-            .having(func.sum(func.length(Chunk.content)) <= 2800)
-        )
-    )
-    short_text = {}
-    if short_ids:
-        for chunk in db.scalars(
-            select(Chunk)
-            .join(Document, Document.id == Chunk.document_id)
-            .where(
-                Chunk.document_id.in_(short_ids),
-                Chunk.version == Document.active_version,
-                current_image,
-            )
-            .order_by(Chunk.document_id, Chunk.ordinal)
-        ):
-            short_text.setdefault(chunk.document_id, []).append(chunk.content)
-    documents = {}
-    long_parts = {}
-    matched_images = {}
-    for candidate in candidates:
-        chunk = chunks[candidate.id]
-        payload = chunk.payload
-        key = payload['key']
-        if chunk.attachment_id is not None and set(_tokens(chunk.content)) & words:
-            matched_images.setdefault(key, set()).add(chunk.attachment_id)
-        if chunk.document_id not in short_text:
-            long_parts.setdefault(key, []).append(chunk.content)
-        if key in documents:
-            # Include several matched sections without unbounded evidence growth.
-            if chunk.document_id not in short_text and len(documents[key]['text']) < 6400:
-                documents[key]['text'] += '\n' + chunk.content
-            continue
-        sources = list(
-            db.scalars(
-                select(Source)
-                .join(DocumentSource, DocumentSource.source_id == Source.id)
-                .where(
-                    DocumentSource.document_id == chunk.document_id,
-                    DocumentSource.version == chunk.version,
-                    valid_source,
-                )
-                .order_by(Source.id)
-            )
-        )
-        evidence_text = (
-            '\n'.join(short_text[chunk.document_id])
-            if chunk.document_id in short_text
-            else chunk.content
-        )
-        documents[key] = {
-            **payload,
-            'text': evidence_text,
-            'excerpt': evidence_text[:3000],
-            'source_ids': [s.id for s in sources],
-            'sources': [{'id': s.id, 'title': s.title, 'url': s.url} for s in sources],
-        }
-    # Generate at most four windows per 1600-character chunk. Coverage is
-    # measured on the actual emitted window, never on text clipped from it.
-    for key, parts in long_parts.items():
-        windows = []
-        seen_windows = set()
-        for text in parts:
-            normalized_text = _normalize(text)
-            matched = set(_tokens(text)) & words
-            starts = {
-                max(0, normalized_text.find(term) - 200) // 400 * 400
-                for term in matched
-                if term in normalized_text
-            }
-            for start in sorted(starts):
-                snippet = text[start : start + 950]
-                from .ingestion import IMAGE_ORIGINS
-
-                origin = next((label for label in IMAGE_ORIGINS if text.startswith(label)), '')
-                if origin and not snippet.startswith(origin):
-                    snippet = origin + '\n' + snippet
-                if snippet not in seen_windows:
-                    seen_windows.add(snippet)
-                    windows.append((snippet, set(_tokens(snippet)) & words))
-        uncovered = set(words)
-        excerpts = []
-        while windows and uncovered and len(excerpts) < 3:
-            index = max(range(len(windows)), key=lambda i: (len(windows[i][1] & uncovered), -i))
-            snippet, covered = windows.pop(index)
-            if not (covered & uncovered):
-                break
-            excerpts.append(snippet)
-            uncovered.difference_update(covered)
-        if excerpts:
-            documents[key]['excerpt'] = '\n…\n'.join(excerpts)
-    hits = rank_documents(list(documents.values()), query, k=k)
-    for hit in hits:
-        hit['attachment_ids'] = sorted(matched_images.get(hit['key'], set()))
-    return hits
-
-
-# Register tables and commit-time indexing for ORM callers as well as the API.
-from . import ingestion as _ingestion  # noqa: E402, F401 — registers ORM indexing hooks
+    return lexical_search(db, query, k=k)[0]

@@ -4,7 +4,6 @@ from fastapi import Depends, Request
 from sqlalchemy.orm import Session
 
 from ..repositories.catalog import CatalogRepository
-from ..repositories.ingestion import IngestionRepository
 from ..services.attachments import AttachmentService
 from ..services.backups import BackupService
 from ..services.catalog import CatalogService
@@ -25,7 +24,7 @@ def get_attachments(request: Request, session: Session = Depends(get_session)):
 
 
 def get_ingestion(session: Session = Depends(get_session)):
-    return IngestionService(IngestionRepository(session))
+    return IngestionService(session)
 
 
 def get_backups(request: Request):

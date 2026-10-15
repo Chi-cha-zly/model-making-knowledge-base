@@ -132,7 +132,7 @@ def _validate_image(raw, suffix):
 
 
 def _import_one(db, path, item, storage, ocr):
-    from app.ingestion import ingest_record
+    from app.services.ingestion import IngestionService
 
     existing = db.scalar(
         select(Technique)
@@ -218,7 +218,7 @@ def _import_one(db, path, item, storage, ocr):
         )
         db.add(record)
         db.flush()
-        document = ingest_record(db, record)
+        document = IngestionService(db).reindex(record)
         if document.status != 'ready':
             raise RuntimeError('Knowledge indexing failed')
         db.commit()

@@ -1,3 +1,4 @@
+from app.services.ingestion import IngestionService
 from pg_test_support import test_database_url
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -110,6 +111,7 @@ def test_candidates_rank_before_limit_and_chat_excerpt_contains_tail(tmp_path):
             sources=[source],
         )
         db.add(target)
+        IngestionService(db).backfill()
         db.commit()
         hits = retrieval.search_documents(db, '钴蓝反光金属罩染', k=6)
         assert hits[0]['id'] == target.id
@@ -231,6 +233,7 @@ def test_failed_version_never_relabels_old_text_with_new_source(tmp_path, monkey
         old = Source(title='原始出处')
         row = Technique(title='教程', summary='旧来源特有靛蓝罩染', sources=[old])
         db.add(row)
+        IngestionService(db).reindex(row)
         db.commit()
         old_id = old.id
         row.sources = [Source(title='无关新出处')]
@@ -241,6 +244,7 @@ def test_failed_version_never_relabels_old_text_with_new_source(tmp_path, monkey
 
         with monkeypatch.context() as patch:
             patch.setattr(ingestion, 'chunk_record', fail)
+            IngestionService(db).reindex(row)
             db.commit()
         hits = retrieval.search_documents(db, '靛蓝罩染')
         assert hits[0]['source_ids'] == [old_id]
@@ -248,11 +252,12 @@ def test_failed_version_never_relabels_old_text_with_new_source(tmp_path, monkey
         old.status = 'withdrawn'
         db.commit()
         assert retrieval.search_documents(db, '靛蓝罩染') == []
-        ingestion.ingest_record(db, row)
+        IngestionService(db).reindex(row)
         db.commit()
         document = db.scalar(select(Document))
         version = document.active_version
         row.sources = [Source(title='更正出处')]
+        IngestionService(db).reindex(row)
         db.commit()
         assert document.active_version == version + 1
         assert retrieval.search_documents(db, '铬黄')[0]['sources'][0]['title'] == '更正出处'
@@ -274,6 +279,7 @@ def test_long_excerpt_covers_specific_term_from_separate_chunk(tmp_path):
                 sources=[Source(title='manual')],
             )
         )
+        IngestionService(db).backfill()
         db.commit()
         assert '3000' in retrieval.search_documents(db, 'sanding preparation 3000')[0]['excerpt']
         assert '3000' in evidence(db, 'sanding preparation 3000')[0]['excerpt']
@@ -294,6 +300,7 @@ def test_long_excerpt_does_not_count_terms_outside_emitted_window(tmp_path):
                 sources=[Source(title='manual')],
             )
         )
+        IngestionService(db).backfill()
         db.commit()
         assert '3000' in retrieval.search_documents(db, 'sanding preparation 3000')[0]['excerpt']
         assert '3000' in evidence(db, 'sanding preparation 3000')[0]['excerpt']

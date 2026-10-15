@@ -6,6 +6,7 @@ from pg_test_support import test_database_url
 from app.models import Attachment, Source, Technique
 from app.vision_models import ImageAnalysis
 from app.ingestion_models import Document, Chunk
+from app.services.ingestion import IngestionService
 from scripts.import_nmm import OCR_NOTICE, SOURCE_TYPE
 
 
@@ -47,6 +48,7 @@ def library(tmp_path):
                 description={'description': '必须保留的视觉推断'},
             )
         )
+        IngestionService(db).reindex(row)
         db.commit()
         ids = (a.id, row.id)
     return engine, storage, ids

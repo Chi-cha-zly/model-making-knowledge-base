@@ -14,6 +14,7 @@ from .chat import install_chat
 from .evaluation import install_evaluation
 from .experiments import install_experiments
 from .services.errors import ServiceError
+from .services.search import SearchService
 from .services.runtime import application_lifespan, build_runtime
 from .user_settings import install_settings
 
@@ -31,6 +32,8 @@ def create_app(
     )
     app = FastAPI(title='模型制作知识库 API', version='0.4.0', lifespan=application_lifespan)
     app.state.configure_saved_provider = provider is None
+    app.state.retrieval = runtime.retrieval
+    app.state.search = SearchService(runtime.engine, runtime.retrieval)
     app.state.jobs = runtime.jobs
     app.state.engine = runtime.engine
     app.state.storage = runtime.storage

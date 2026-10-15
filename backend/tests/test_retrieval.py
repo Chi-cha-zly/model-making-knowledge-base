@@ -127,6 +127,9 @@ def test_live_permission_filter_source_redaction_and_withdrawal():
                 Technique(title='打磨'),
             ]
         )
+        from app.services.ingestion import IngestionService
+
+        IngestionService(db).backfill()
         db.commit()
         docs = retrieval.load_documents(db)
         assert {doc['key'] for doc in docs} == {f'technique:{good.id}', f'product:{product.id}'}
@@ -134,6 +137,9 @@ def test_live_permission_filter_source_redaction_and_withdrawal():
         assert all(doc['sources'][0]['title'] == '本地证据' for doc in docs)
         assert keys(docs, 'ab12')[0] == f'product:{product.id}'
         source.status = 'withdrawn'
+        from app.services.ingestion import IngestionService
+
+        IngestionService(db).backfill()
         db.commit()
         assert retrieval.load_documents(db) == []
 
@@ -153,6 +159,9 @@ def test_chat_uses_shared_ranker_readable_evidence_and_existing_budget():
                 for i in range(9)
             ]
         )
+        from app.services.ingestion import IngestionService
+
+        IngestionService(db).backfill()
         db.commit()
         citations = evidence(db, ('我想知道更多。' * 2000) + 'airbrush')
         assert 1 <= len(citations) <= 6

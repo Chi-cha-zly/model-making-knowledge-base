@@ -1,7 +1,6 @@
 """LangChain adapter with bounded calls and sanitized, explicit LangSmith traces."""
 
 import asyncio
-import math
 import json
 from contextlib import aclosing, asynccontextmanager
 from time import perf_counter
@@ -11,6 +10,12 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langsmith import trace as smith_trace, tracing_context
 
 from .errors import ProviderError
+from .embedding_contract import (
+    DIMENSION_MODELS,
+    EMBEDDING_DIMENSIONS,
+    validate_vectors,
+    embedding_batch_limit,
+)
 from .runtime_config import (
     read_settings,
     normalize_model,
@@ -92,26 +97,6 @@ class _StreamingClient(httpx.AsyncClient):
             extensions=response.extensions,
             stream=_CompleteSSEStream(response),
         )
-
-
-def validate_vectors(vectors, count):
-    """Validate real numeric results without normalizing or inventing embeddings."""
-    if not isinstance(vectors, list) or len(vectors) != count or not vectors:
-        raise ProviderError('向量服务返回数量不匹配。')
-    dimensions = len(vectors[0]) if isinstance(vectors[0], list) else 0
-    if not 1 <= dimensions <= 65536 or any(
-        not isinstance(vector, list)
-        or len(vector) != dimensions
-        or any(
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(value)
-            for value in vector
-        )
-        for vector in vectors
-    ):
-        raise ProviderError('向量服务返回无效数值或不一致的维度。')
-    return dimensions
 
 
 async def _check_embedding_response(response):
@@ -277,12 +262,13 @@ class LangChainProvider:
                     event_hooks={'response': [_check_embedding_response]},
                 ) as client:
                     # Bailian v3/v4 permit at most 10 inputs per HTTP request, including via gateways.
-                    batch_limit = (
-                        10
-                        if self.embedding_model in {'text-embedding-v3', 'text-embedding-v4'}
-                        else 64
-                    )
+                    batch_limit = embedding_batch_limit(self.embedding_model)
                     encoder = OpenAIEmbeddings(
+                        **(
+                            {'dimensions': EMBEDDING_DIMENSIONS}
+                            if self.embedding_model in DIMENSION_MODELS
+                            else {}
+                        ),
                         model=self.embedding_model,
                         base_url=self.embedding_base_url,
                         api_key=self.embedding_api_key or 'local-no-key',
@@ -305,6 +291,12 @@ class LangChainProvider:
         except Exception as exc:
             failure = ProviderError(str(exc)) if isinstance(exc, ProviderError) else safe_error(exc)
         raise failure from None
+
+    async def embed_query(self, text):
+        """Query role over the existing compatible API; no DashScope-only parameters."""
+        if not isinstance(text, str) or not text.strip() or len(text) > 2000:
+            raise ProviderError('检索查询须为 1–2000 字符。')
+        return (await self.embed([text]))[0]
 
     @classmethod
     def from_env(cls):

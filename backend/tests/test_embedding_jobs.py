@@ -1,4 +1,4 @@
-"""Real LangChain/SDK calls over MockTransport; database effects use temporary SQLite."""
+"""Real LangChain/SDK calls over MockTransport; database effects use isolated PostgreSQL."""
 
 from pg_test_support import test_database_url
 import asyncio
@@ -22,7 +22,15 @@ def configuration():
     }
 
 
+def fixture_vector(x, y):
+    """A real synthetic 1024-D vector with two varying coordinates."""
+    return [x, y] + [0.0] * 1022
+
+
 def response(vectors, indices=None):
+    # Two-coordinate shorthand is only a test-data generator. Other lengths stay
+    # untouched so malformed response tests continue to exercise rejection.
+    vectors = [fixture_vector(*value) if len(value) == 2 else value for value in vectors]
     return httpx.Response(
         200,
         text=json.dumps(
@@ -117,7 +125,10 @@ def test_real_sdk_embedding_preserves_input_order_and_uses_separate_endpoint(mon
         return response([[2.0, 0.0], [1.0, 0.5]], [1, 0])
 
     p = provider(handler)
-    assert asyncio.run(p.embed(['first', 'second'])) == [[1.0, 0.5], [2.0, 0.0]]
+    assert asyncio.run(p.embed(['first', 'second'])) == [
+        fixture_vector(1.0, 0.5),
+        fixture_vector(2.0, 0.0),
+    ]
     assert str(calls[0].url) == 'https://embed.invalid/v1/embeddings'
     assert calls[0].headers['authorization'] == 'Bearer embedding-test-key'
     assert json.loads(calls[0].content) == {
@@ -192,8 +203,8 @@ def test_batches_atomically_write_only_active_version_and_are_idempotent(tmp_pat
     assert calls == [['text 0', 'text 1'], ['text 2']]
     state = rows(engine)
     assert state[0][2] == 'pending'
-    assert all(row[2:5] == ('ready', 'encoder-v1', 2) for row in state[1:])
-    assert [row[5] for row in state[1:]] == [[0.0, 0.5], [1.0, 0.5], [2.0, 0.5]]
+    assert all(row[2:5] == ('ready', 'encoder-v1', 1024) for row in state[1:])
+    assert [row[5] for row in state[1:]] == [fixture_vector(i, 0.5) for i in range(3)]
     assert asyncio.run(embed_pending(engine, p, apply=True))['documents'] == []
     assert len(calls) == 2
 
@@ -204,7 +215,12 @@ def test_failed_batch_is_atomic_retry_preserves_existing_ready(tmp_path):
     engine = seed(tmp_path)
     with Session(engine) as db:
         row = db.scalar(select(Embedding).join(Chunk).where(Chunk.version == 2, Chunk.ordinal == 0))
-        row.status, row.model, row.dimensions, row.vector = 'ready', 'encoder-v1', 2, [9.0, 9.0]
+        row.status, row.model, row.dimensions, row.vector = (
+            'ready',
+            'encoder-v1',
+            1024,
+            fixture_vector(9.0, 9.0),
+        )
         db.commit()
     calls = []
 
@@ -216,14 +232,14 @@ def test_failed_batch_is_atomic_retry_preserves_existing_ready(tmp_path):
 
     result = asyncio.run(embed_pending(engine, provider(fail_second), apply=True, batch_size=1))
     assert result['status'] == 'partial_failure'
-    assert rows(engine)[1][2:6] == ('ready', 'encoder-v1', 2, [9.0, 9.0])
+    assert rows(engine)[1][2:6] == ('ready', 'encoder-v1', 1024, fixture_vector(9.0, 9.0))
     assert all(row[2] == 'failed' and row[5] is None for row in rows(engine)[2:])
     assert 'secret' not in json.dumps(result)
     retry = asyncio.run(
         embed_pending(engine, provider(lambda _: response([[1.0, 2.0], [3.0, 4.0]])), apply=True)
     )
     assert retry['status'] == 'completed'
-    assert rows(engine)[1][5] == [9.0, 9.0]
+    assert rows(engine)[1][5] == fixture_vector(9.0, 9.0)
     assert all(row[2] == 'ready' for row in rows(engine)[1:])
 
 
@@ -353,6 +369,9 @@ def test_title_only_record_embeds_real_title_and_hashes_actual_input(tmp_path):
     engine = create_engine(test_database_url(f'{tmp_path / "title.db"}'))
     with Session(engine) as db:
         db.add(Technique(title='靛蓝罩染', sources=[Source(title='出处')]))
+        from app.services.ingestion import IngestionService
+
+        IngestionService(db).backfill()
         db.commit()
     calls = []
 
@@ -404,7 +423,7 @@ def test_bailian_model_batches_at_ten_and_preserves_global_order(model, count):
         settings={**configuration(), 'EMBEDDING_MODEL': model},
         transport=httpx.MockTransport(handler),
     )
-    assert asyncio.run(p.embed(texts)) == [[float(i), 0.5] for i in range(count)]
+    assert asyncio.run(p.embed(texts)) == [fixture_vector(float(i), 0.5) for i in range(count)]
     assert calls == [texts[start : start + 10] for start in range(0, count, 10)]
 
 
@@ -414,7 +433,7 @@ def test_other_embedding_models_retain_existing_batch_capacity():
     def handler(request):
         batch = json.loads(request.content)['input']
         calls.append(batch)
-        return response([[float(i)] for i in range(len(batch))])
+        return response([[float(i), 0.5] for i in range(len(batch))])
 
     assert len(asyncio.run(provider(handler).embed(['input'] * 23))) == 23
     assert len(calls) == 1 and len(calls[0]) == 23
@@ -475,7 +494,7 @@ def test_bailian_dimensions_must_match_across_sdk_batches():
         settings={**configuration(), 'EMBEDDING_MODEL': 'text-embedding-v4'},
         transport=httpx.MockTransport(handler),
     )
-    with pytest.raises(ProviderError, match='不一致的维度'):
+    with pytest.raises(ProviderError, match='维度'):
         asyncio.run(p.embed(['input'] * 11))
     assert [len(batch) for batch in calls] == [10, 1]
 
@@ -492,8 +511,8 @@ def test_bailian_sdk_sub_batches_preserve_document_atomicity_and_existing_ready(
         ready.status, ready.model, ready.dimensions, ready.vector = (
             'ready',
             'text-embedding-v4',
-            2,
-            [9.0, 9.0],
+            1024,
+            fixture_vector(9.0, 9.0),
         )
         db.commit()
     before = rows(engine)
@@ -533,7 +552,98 @@ def test_bailian_sdk_sub_batches_preserve_document_atomicity_and_existing_ready(
         else:
             assert result['status'] == 'completed'
             assert all(row[2] == 'ready' for row in state[2:])
-            assert [row[5] for row in state[2:]] == [[float(i), 0.5] for i in range(1, 23)]
+            assert [row[5] for row in state[2:]] == [
+                fixture_vector(float(i), 0.5) for i in range(1, 23)
+            ]
     assert [len(batch) for batch in calls] == (
-        [10, 10] if failure in {'http', 'cancel'} else [10, 10, 2]
+        [10, 10] if failure in {'http', 'cancel', 'dimensions'} else [10, 10, 2]
     )
+
+
+@pytest.mark.parametrize('change', ['withdrawn', 'hash', 'during_request', 'between_batches'])
+def test_image_authorization_checked_before_encoding_and_publication(tmp_path, change):
+    from app.models import Attachment
+    from app.embedding_jobs import embed_pending
+
+    engine = seed(tmp_path, count=3)
+    with Session(engine) as db:
+        image = Attachment(
+            filename='a.png',
+            content_type='image/png',
+            storage_name='a.png',
+            sha256='a' * 64,
+            size=1,
+        )
+        db.add(image)
+        db.flush()
+        image_id = image.id
+        chunks = list(db.scalars(select(Chunk).where(Chunk.version == 2).order_by(Chunk.ordinal)))
+        for chunk in chunks:
+            chunk.attachment_id = image.id
+            chunk.payload = {'attachment_hash': image.sha256}
+        if change == 'withdrawn':
+            image.status = 'withdrawn'
+        elif change == 'hash':
+            image.sha256 = 'b' * 64
+        db.commit()
+    calls = []
+
+    class Encoder:
+        embedding_configured = True
+        embedding_model = 'encoder-v1'
+
+        async def embed(self, texts):
+            calls.append(texts)
+            if change in ('during_request', 'between_batches'):
+                with Session(engine) as db:
+                    db.get(Attachment, image_id).status = 'withdrawn'
+                    db.commit()
+            return [fixture_vector(1, 0) for _ in texts]
+
+    result = asyncio.run(
+        embed_pending(
+            engine, Encoder(), apply=True, batch_size=1 if change == 'between_batches' else 32
+        )
+    )
+    assert len(calls) == (1 if change in ('during_request', 'between_batches') else 0)
+    assert all(row[2] != 'ready' for row in rows(engine))
+    if calls:
+        assert result['documents'][0]['status'] == 'stale'
+
+
+def test_v4_http_sub_batches_recheck_image_permission(tmp_path):
+    from app.models import Attachment
+    from app.embedding_jobs import embed_pending
+
+    engine = seed(tmp_path, count=11)
+    with Session(engine) as db:
+        image = Attachment(
+            filename='a.png',
+            content_type='image/png',
+            storage_name='a.png',
+            sha256='a' * 64,
+            size=1,
+        )
+        db.add(image)
+        db.flush()
+        image_id = image.id
+        for chunk in db.scalars(select(Chunk).where(Chunk.version == 2)):
+            chunk.attachment_id = image_id
+            chunk.payload = {'attachment_hash': image.sha256}
+        db.commit()
+    calls = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        calls.append(body['input'])
+        with Session(engine) as db:
+            db.get(Attachment, image_id).status = 'withdrawn'
+            db.commit()
+        return response([[1, 0] for _ in body['input']])
+
+    settings = {**configuration(), 'EMBEDDING_MODEL': 'text-embedding-v4'}
+    encoder = LangChainProvider(settings=settings, transport=httpx.MockTransport(handler))
+    result = asyncio.run(embed_pending(engine, encoder, apply=True))
+    assert [len(batch) for batch in calls] == [10]
+    assert result['documents'][0]['status'] == 'stale'
+    assert all(row[2] != 'ready' for row in rows(engine))

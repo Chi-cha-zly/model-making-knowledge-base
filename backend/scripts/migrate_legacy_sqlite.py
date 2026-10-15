@@ -14,6 +14,8 @@ from sqlalchemy import MetaData, create_engine, select, text
 from pgvector.sqlalchemy import Vector as Vector  # registers PostgreSQL reflection
 from app.content import legacy_steps_to_blocks
 from app.db import create_db_engine, init_db
+from sqlalchemy.orm import Session
+from app.services.ingestion import IngestionService
 
 
 def copy_legacy_database(
@@ -124,6 +126,8 @@ def copy_legacy_database(
                                     f'ALTER SEQUENCE {sequence} RESTART WITH {int(maximum or 0) + 1}'
                                 )
                             )
+                with Session(bind=conn) as db:
+                    report['indexed_documents'] = IngestionService(db).backfill(strict=True)
                 target_attachments.mkdir(parents=True, exist_ok=True)
                 for path in files:
                     destination = target_attachments / path.name

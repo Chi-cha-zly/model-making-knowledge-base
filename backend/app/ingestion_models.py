@@ -4,6 +4,7 @@ from sqlalchemy import ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from .models import Base
 from pgvector.sqlalchemy import Vector
+from .embedding_contract import EMBEDDING_DIMENSIONS
 
 
 class Document(Base):
@@ -36,12 +37,20 @@ class Chunk(Base):
 
 class Embedding(Base):
     __tablename__ = 'embeddings'
+    __table_args__ = (
+        Index(
+            'ix_embeddings_vector_cosine',
+            'vector',
+            postgresql_using='hnsw',
+            postgresql_ops={'vector': 'vector_cosine_ops'},
+        ),
+    )
     id: Mapped[int] = mapped_column(primary_key=True)
     chunk_id: Mapped[int] = mapped_column(ForeignKey('chunks.id', ondelete='CASCADE'), unique=True)
     status: Mapped[str] = mapped_column(String(20), default='pending')
     model: Mapped[str | None] = mapped_column(String(200), nullable=True)
     dimensions: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    vector: Mapped[list | None] = mapped_column(Vector(), nullable=True)
+    vector: Mapped[list | None] = mapped_column(Vector(EMBEDDING_DIMENSIONS), nullable=True)
     content_hash: Mapped[str] = mapped_column(String(64))
 
 

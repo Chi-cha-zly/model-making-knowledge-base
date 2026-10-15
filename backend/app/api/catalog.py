@@ -1,6 +1,6 @@
 """HTTP catalog contract; business rules live in CatalogService."""
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 
 from ..schemas import (
     ProductInput,
@@ -92,10 +92,12 @@ def withdraw_product(id: int, service: CatalogService = Depends(get_catalog)):
 
 
 @router.get('/search')
-def search(
-    q: str = Query(min_length=1, max_length=2000), service: CatalogService = Depends(get_catalog)
-):
-    return service.search(q)
+async def search(request: Request, q: str = Query(min_length=1, max_length=2000)):
+    if request.app.state.retrieval.mode == 'hybrid':
+        from .evaluation import paid_origin
+
+        paid_origin(request)
+    return await request.app.state.search.search(q)
 
 
 @router.post('/imports/markdown', status_code=201)

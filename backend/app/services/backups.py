@@ -29,7 +29,7 @@ from ..models import (
 from ..chat import export_chat, validate_chat_backup, restore_chat
 from ..evaluation import export_evaluation, validate_evaluation_backup, restore_evaluation
 from ..experiments import export_experiments, validate_experiment_backup, restore_experiments
-from ..ingestion import backfill, clear_index
+from .ingestion import IngestionService
 from ..job_models import Job
 from ..vision_models import ImageAnalysis, ImageDescription
 from ..content import content_adapter, legacy_steps_to_blocks, image_ids
@@ -260,7 +260,7 @@ class BackupService:
                 with Session(engine) as db:
                     placed = []
                     try:
-                        clear_index(db)
+                        IngestionService(db).clear()
                         db.execute(delete(technique_attachments))
                         db.execute(delete(product_attachments))
                         db.execute(delete(technique_sources))
@@ -376,7 +376,7 @@ class BackupService:
                         db.add_all(ImageAnalysis(**item) for item in restored_analyses)
                         db.flush()
                         # Restore is all-or-nothing, including every derived index.
-                        backfill(db, strict=True)
+                        IngestionService(db).backfill(strict=True)
                         if engine.dialect.name == 'postgresql':
                             for table in (
                                 'sources',

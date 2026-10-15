@@ -4,6 +4,7 @@ from pg_test_support import test_database_url
 from sqlalchemy import create_engine, select, func
 from sqlalchemy.orm import Session
 from app.models import Technique, Source
+from app.services.ingestion import IngestionService
 
 
 def test_ingestion_versions_idempotence_and_pending_embeddings(monkeypatch):
@@ -14,15 +15,17 @@ def test_ingestion_versions_idempotence_and_pending_embeddings(monkeypatch):
     with Session(engine) as db:
         row = Technique(title='打磨', summary='砂纸处理', sources=[Source(title='出处')])
         db.add(row)
+        IngestionService(db).reindex(row)
         db.commit()
         document = db.scalar(select(Document))
         assert document.active_version == 1
-        ingestion.ingest_record(db, row)
+        IngestionService(db).reindex(row)
         db.commit()
         assert db.scalar(select(func.count()).select_from(IngestionJob)) == 1
         assert db.scalar(select(Embedding)).status == 'pending'
         assert db.scalar(select(Embedding)).vector is None
         row.summary = '新的抛光工序'
+        IngestionService(db).reindex(row)
         db.commit()
         assert document.active_version == 2
         assert db.scalar(select(func.count()).select_from(Chunk).where(Chunk.version == 1)) > 0
@@ -33,13 +36,14 @@ def test_ingestion_versions_idempotence_and_pending_embeddings(monkeypatch):
 
         monkeypatch.setattr(ingestion, 'chunk_record', fail)
         row.summary = '失败版本'
+        IngestionService(db).reindex(row)
         db.commit()
         assert document.active_version == 2
         job = db.scalar(select(IngestionJob).order_by(IngestionJob.id.desc()))
         assert job.status == 'failed'
         assert 'private' not in job.error
         monkeypatch.setattr(ingestion, 'chunk_record', original)
-        ingestion.ingest_record(db, row)
+        IngestionService(db).reindex(row)
         db.commit()
         assert document.active_version == 3
 

@@ -25,7 +25,9 @@ def test_catalog_search_understands_natural_questions_and_step_content(tmp_path)
         assert response.status_code == 200
         assert response.json()['techniques'][0]['id'] == target['id']
         client.patch(f'/api/v1/sources/{source["id"]}', json={'status': 'withdrawn'})
-        assert client.get('/api/v1/search', params={'q': '新手应该怎样打磨水口？'}).json() == {
+        response = client.get('/api/v1/search', params={'q': '新手应该怎样打磨水口？'}).json()
+        assert response.pop('retrieval')['effective_strategy'] == 'bm25'
+        assert response == {
             'techniques': [],
             'products': [],
             'ranking': [],
@@ -37,7 +39,9 @@ def test_catalog_search_limits_unbounded_queries(tmp_path):
         create_app(test_database_url(f'{tmp_path / "catalog.db"}'), tmp_path / 'files')
     ) as client:
         assert client.get('/api/v1/search', params={'q': 'x' * 2001}).status_code == 422
-        assert client.get('/api/v1/search', params={'q': '   '}).json() == {
+        response = client.get('/api/v1/search', params={'q': '   '}).json()
+        assert response.pop('retrieval')['effective_strategy'] == 'bm25'
+        assert response == {
             'techniques': [],
             'products': [],
             'ranking': [],

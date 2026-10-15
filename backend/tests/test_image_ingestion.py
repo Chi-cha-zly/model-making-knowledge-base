@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from app.models import Attachment, Source, Technique
 from app.ingestion_models import Document
 from app.vision_models import ImageAnalysis
-from app.ingestion import ingest_record
+from app.services.ingestion import IngestionService
 from app.retrieval import search_documents
 
 
@@ -39,6 +39,7 @@ def test_image_analysis_is_searchable_separate_evidence_and_cites_matched_images
             ],
         )
         db.add(row)
+        IngestionService(db).reindex(row)
         db.commit()
         initial = db.scalar(select(Document)).active_version
         db.add(
@@ -59,7 +60,7 @@ def test_image_analysis_is_searchable_separate_evidence_and_cites_matched_images
             )
         )
         db.flush()
-        ingest_record(db, row)
+        IngestionService(db).reindex(row)
         db.commit()
         document = db.scalar(select(Document))
         assert document.active_version == initial + 1
@@ -68,12 +69,12 @@ def test_image_analysis_is_searchable_separate_evidence_and_cites_matched_images
         assert '本地 OCR 原文' in hit['excerpt'] and 'AK12345' in hit['excerpt']
         assert '模型视觉推断' in hit['excerpt'] and '材质不确定' in hit['excerpt']
         assert search_documents(db, '水贴说明')[0]['attachment_ids'] == []
-        ingest_record(db, row)
+        IngestionService(db).reindex(row)
         db.commit()
         assert document.active_version == initial + 1
         db.get(ImageAnalysis, a.id).image_hash = 'stale'
         db.flush()
-        ingest_record(db, row)
+        IngestionService(db).reindex(row)
         db.commit()
         assert search_documents(db, '孔雀绿') == []
     engine.dispose()
@@ -94,6 +95,7 @@ def test_unanalysed_auxiliary_attachments_receive_image_chunks():
             size=1,
         )
         db.add(Product(name='product', sources=[source], attachments=[attachment]))
+        IngestionService(db).backfill()
         db.commit()
         chunk = db.scalar(select(Chunk).where(Chunk.attachment_id == attachment.id))
         assert chunk is not None and chunk.kind == 'image'
@@ -136,6 +138,7 @@ def test_long_image_evidence_retains_origin_and_current_attachment_authorization
                 },
             )
         )
+        IngestionService(db).reindex(row)
         db.commit()
         for query, label in [('稀有铬绿', '本地 OCR 原文'), ('孔雀石罩染', '模型视觉推断')]:
             hit = search_documents(db, query)[0]

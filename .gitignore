@@ -80,3 +80,6 @@ dist/
 *.mp3
 *.mp4
 *.traineddata
+
+# User-approved public overview; every other document remains local.
+!/README.md

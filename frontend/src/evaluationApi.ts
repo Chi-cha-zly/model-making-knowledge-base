@@ -1,3 +1,4 @@
+import type { RetrievalMetadata } from './retrievalMetadata'
 import type { RecordType, Source } from './api'
 export type Judgment = {
   key: string
@@ -45,43 +46,44 @@ export type Metrics = {
   positive_cases: number
   no_answer_cases: number
 }
+export type StrategyPair<T> =
+  { baseline: T; ranked: T } | { bm25: T; hybrid: T }
+export type Diagnostics = { bm25: RetrievalMetadata; hybrid: RetrievalMetadata }
+export function pair<T>(values: StrategyPair<T>): [T, T] {
+  return 'bm25' in values
+    ? [values.bm25, values.hybrid]
+    : [values.baseline, values.ranked]
+}
 export type RunSummary = {
+  report_version?: 2
+  strategies?: ['bm25', 'hybrid']
+  degraded_cases?: number
   id: number
   dataset_id: string
   dataset_name: string
   created_at: string
   k: number
   corpus: 'demo' | 'live'
-  metrics: {
-    baseline: Metrics
-    ranked: Metrics
-  }
+  metrics: StrategyPair<Metrics>
 }
 export type Report = RunSummary & {
   corpus_size: number
   dataset_hash: string
   corpus_hash: string
-  versions: {
-    baseline: string
-    ranked: string
-  }
-  cases: (EvaluationCase & {
-    baseline: Hit[]
-    ranked: Hit[]
-    metrics: {
-      baseline: Metrics
-      ranked: Metrics
-    }
-  })[]
+  versions: StrategyPair<string>
+  cases: (EvaluationCase &
+    StrategyPair<Hit[]> & {
+      metrics: StrategyPair<Metrics>
+      diagnostics?: Diagnostics
+    })[]
 }
 export type Preview = {
   query: string
   k: number
   corpus_size: number
   version: string
-  baseline: Hit[]
-  ranked: Hit[]
-}
+  diagnostics?: Diagnostics
+} & StrategyPair<Hit[]>
 async function request<T>(
   path: string,
   method = 'GET',
@@ -108,6 +110,8 @@ async function request<T>(
 export const evaluationApi = {
   preview: (q: string, k: number) =>
     request<Preview>(`/retrieval/preview?q=${encodeURIComponent(q)}&k=${k}`),
+  hybridPreview: (query: string, k: number) =>
+    request<Preview>('/retrieval/preview', 'POST', { query, k }),
   datasets: () => request<Dataset[]>('/evaluations/datasets'),
   dataset: (id: string) =>
     request<Dataset>(`/evaluations/datasets/${encodeURIComponent(id)}`),
@@ -121,8 +125,12 @@ export const evaluationApi = {
     request<{
       deleted: boolean
     }>(`/evaluations/datasets/${encodeURIComponent(id)}`, 'DELETE'),
-  run: (dataset_id: string, k: number) =>
-    request<Report>('/evaluations/runs', 'POST', { dataset_id, k }),
+  run: (dataset_id: string, k: number, hybrid = false) =>
+    request<Report>('/evaluations/runs', 'POST', {
+      dataset_id,
+      k,
+      ...(hybrid ? { strategies: ['bm25', 'hybrid'] } : {}),
+    }),
   history: () => request<RunSummary[]>('/evaluations/runs'),
   report: (id: number) => request<Report>(`/evaluations/runs/${id}`),
 }

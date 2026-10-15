@@ -1,3 +1,4 @@
+import RetrievalStatus from '../../components/RetrievalStatus'
 import RetrievedImages from '../../components/RetrievedImages'
 import { useLocation, useNavigate } from 'react-router'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
@@ -5,6 +6,9 @@ import { api } from '../../api'
 import '../../evaluation.css'
 import {
   evaluationApi,
+  pair,
+  type StrategyPair,
+  type Diagnostics,
   parseDataset,
   type Dataset,
   type DatasetInput,
@@ -91,56 +95,67 @@ function Comparison({
   baseline,
   ranked,
   demo,
+  bm25,
+  hybrid,
+  diagnostics,
   onOpenReference,
 }: {
-  baseline: Hit[]
-  ranked: Hit[]
+  baseline?: Hit[]
+  ranked?: Hit[]
+  bm25?: Hit[]
+  hybrid?: Hit[]
+  diagnostics?: Diagnostics
   demo: boolean
 } & ReferenceProps) {
   return (
     <div className="evaluation-comparison">
       <section>
-        <h3>基线 · V2</h3>
-        <Hits hits={baseline} demo={demo} onOpenReference={onOpenReference} />
+        <h3>{bm25 ? 'BM25 · 在线词法' : '基线 · V2'}</h3>
+        {diagnostics && <RetrievalStatus metadata={diagnostics.bm25} />}
+        <Hits
+          hits={bm25 ?? baseline ?? []}
+          demo={demo}
+          onOpenReference={onOpenReference}
+        />
       </section>
       <section>
-        <h3>新版 · 本地排序</h3>
-        <Hits hits={ranked} demo={demo} onOpenReference={onOpenReference} />
+        <h3>{hybrid ? '混合检索 · 实际策略见诊断' : '新版 · 本地排序'}</h3>
+        {diagnostics && <RetrievalStatus metadata={diagnostics.hybrid} />}
+        <Hits
+          hits={hybrid ?? ranked ?? []}
+          demo={demo}
+          onOpenReference={onOpenReference}
+        />
       </section>
     </div>
   )
 }
-function MetricTable({
-  metrics,
-}: {
-  metrics: {
-    baseline: Metrics
-    ranked: Metrics
-  }
-}) {
+function MetricTable({ metrics }: { metrics: StrategyPair<Metrics> }) {
+  const [baseline, ranked] = pair(metrics)
+  const hybrid = 'bm25' in metrics
   return (
     <div className="evaluation-table-wrap">
       <table>
         <thead>
           <tr>
             <th>指标</th>
-            <th>基线</th>
-            <th>新版</th>
+            <th>{hybrid ? 'BM25' : '基线'}</th>
+            <th>{hybrid ? '请求混合（含降级）' : '新版'}</th>
           </tr>
         </thead>
         <tbody>
           {metricNames.map(([key, label]) => (
             <tr key={key}>
               <th>{label}</th>
-              <td>{formatMetric(metrics.baseline[key])}</td>
-              <td>{formatMetric(metrics.ranked[key])}</td>
+              <td>{formatMetric(baseline[key])}</td>
+              <td>{formatMetric(ranked[key])}</td>
             </tr>
           ))}
         </tbody>
       </table>
       <p>
-        正例题 {metrics.ranked.positive_cases} 道；无答案题{' '}
-        {metrics.ranked.no_answer_cases} 道。
+        正例题 {ranked.positive_cases} 道；无答案题 {ranked.no_answer_cases}{' '}
+        道。
       </p>
     </div>
   )
@@ -165,6 +180,14 @@ function ReportView({
           人工编写的合成示例，仅供回归演示；不是业务数据或独立留出集。示例引用不会打开真实资料。
         </p>
       )}
+      {report.report_version === 2 && (
+        <p className="evaluation-note">
+          降级 {report.degraded_cases ?? 0} 题；
+          {report.degraded_cases
+            ? '混合列包含实际退回词法的结果，不能视为全部完成混合检索。'
+            : '本次无词法降级。检索指标不代表回答质量。'}
+        </p>
+      )}
       <MetricTable metrics={report.metrics} />
       <details>
         <summary>指标定义与报告快照</summary>
@@ -177,9 +200,7 @@ function ReportView({
           上述四项仅以正例题为分母。正确留空比例仅以无答案题为分母，检索返回空列表才算正确。无适用题时显示“不适用”。测评只衡量检索，不代表回答事实准确率。相关性
           1 / 2 / 3 表示弱相关 / 相关 / 高度相关。
         </p>
-        <p>
-          不可变历史快照：{report.versions.baseline} / {report.versions.ranked}
-        </p>
+        <p>不可变历史快照：{pair(report.versions).join(' / ')}</p>
         <p className="evaluation-hash">
           测评集哈希：{report.dataset_hash}
           <br />
@@ -188,11 +209,12 @@ function ReportView({
       </details>
       <h3>逐题诊断</h3>
       {report.cases.map((c) => {
+        const [baseline, ranked] = pair(c.metrics)
         const regress = metricNames.some(
           ([key]) =>
-            c.metrics.baseline[key] !== null &&
-            c.metrics.ranked[key] !== null &&
-            c.metrics.ranked[key]! < c.metrics.baseline[key]!,
+            baseline[key] !== null &&
+            ranked[key] !== null &&
+            ranked[key]! < baseline[key]!,
         )
         return (
           <details className="evaluation-case-result" key={c.id}>
@@ -208,8 +230,7 @@ function ReportView({
             </p>
             <MetricTable metrics={c.metrics} />
             <Comparison
-              baseline={c.baseline}
-              ranked={c.ranked}
+              {...c}
               demo={report.corpus === 'demo'}
               onOpenReference={onOpenReference}
             />
@@ -236,6 +257,7 @@ export default function EvaluationWorkbench({
   }
   const [historyExpanded, setHistoryExpanded] = useState(tab === 'experiments')
   const [showDemo, setShowDemo] = useState(false)
+  const [hybrid, setHybrid] = useState(false)
   useEffect(() => {
     if (tab === 'experiments') setHistoryExpanded(true)
   }, [tab])
@@ -289,7 +311,9 @@ export default function EvaluationWorkbench({
     setPreview(null)
     setBusy(true)
     try {
-      const result = await evaluationApi.preview(query.trim(), k)
+      const result = await (hybrid
+        ? evaluationApi.hybridPreview(query.trim(), k)
+        : evaluationApi.preview(query.trim(), k))
       if (alive.current && token === previewRequest.current) setPreview(result)
     } catch (e) {
       if (alive.current && token === previewRequest.current)
@@ -311,7 +335,11 @@ export default function EvaluationWorkbench({
     try {
       const result =
         id === undefined
-          ? await evaluationApi.run(selected, k)
+          ? await evaluationApi.run(
+              selected,
+              k,
+              hybrid && current?.corpus === 'live',
+            )
           : await evaluationApi.report(id)
       if (alive.current && token === reportRequest.current) {
         setReport(result)
@@ -413,7 +441,7 @@ export default function EvaluationWorkbench({
         <div>
           <h1>检索与测评</h1>
           <p>
-            核对真实资料的检索排序，留下可复现的测评记录。检索调试和本地测评无需模型密钥。
+            核对真实资料的检索排序，留下可复现的测评记录。旧版词法对比无需模型密钥；混合检索会调用向量服务。
           </p>
         </div>
       </div>
@@ -465,6 +493,31 @@ export default function EvaluationWorkbench({
               ))}
             </select>
           </label>
+          <label className="evaluation-note">
+            <input
+              type="checkbox"
+              aria-label="比较 BM25 与混合检索（调用向量服务）"
+              checked={
+                hybrid && (tab === 'preview' || current?.corpus !== 'demo')
+              }
+              disabled={
+                busy ||
+                reportLoading ||
+                (tab === 'datasets' && current?.corpus !== 'live')
+              }
+              onChange={(event) => {
+                setHybrid(event.target.checked)
+                setPreview(null)
+                previewRequest.current++
+              }}
+            />
+            比较 BM25 与混合检索（调用向量服务）
+          </label>
+          {hybrid && (tab === 'preview' || current?.corpus === 'live') && (
+            <p className="evaluation-note">
+              会为问题生成查询向量，发送至已配置服务，可能产生费用。未配置或失败时会明确显示词法降级。
+            </p>
+          )}
           {tab === 'preview' ? (
             <>
               <form className="evaluation-query" onSubmit={search}>
@@ -473,7 +526,12 @@ export default function EvaluationWorkbench({
                   <input
                     maxLength={2000}
                     value={query}
-                    onChange={(e) => setQuery(e.target.value)}
+                    onChange={(e) => {
+                      setQuery(e.target.value)
+                      previewRequest.current++
+                      setPreview(null)
+                      setBusy(false)
+                    }}
                     placeholder="例如：水口打磨或产品编号"
                   />
                 </label>

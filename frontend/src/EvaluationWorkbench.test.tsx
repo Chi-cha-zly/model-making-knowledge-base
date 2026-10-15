@@ -561,3 +561,163 @@ it('leaves demo-only catalogues unselected and opens historical demo reports wit
   await user.click(screen.getByLabelText('显示合成示例（历史）'))
   expect(select).toHaveValue('')
 })
+
+const retrievalMetadata = {
+  requested_strategy: 'hybrid',
+  effective_strategy: 'bm25',
+  version: 'indexed-bm25-2',
+  fallback_reason: 'timeout',
+  query_truncated: false,
+  lexical_candidates: 2,
+  vector_candidates: 0,
+  model: 'text-embedding-v4',
+  dimensions: null,
+}
+const hybridReport = {
+  ...report,
+  id: 8,
+  corpus: 'live',
+  report_version: 2,
+  strategies: ['bm25', 'hybrid'],
+  degraded_cases: 1,
+  versions: { bm25: 'indexed-bm25-2', hybrid: 'hybrid-rrf60-rules-1' },
+  metrics: { bm25: metric, hybrid: metric },
+  cases: [
+    {
+      ...dataset.cases[0],
+      bm25: [hit],
+      hybrid: [hit],
+      metrics: { bm25: metric, hybrid: metric },
+      diagnostics: {
+        bm25: {
+          ...retrievalMetadata,
+          requested_strategy: 'bm25',
+          fallback_reason: null,
+        },
+        hybrid: retrievalMetadata,
+      },
+    },
+  ],
+}
+it('requires explicit hybrid opt-in and shows actual fallback instead of claiming hybrid success', async () => {
+  saved = {
+    ...dataset,
+    id: 'custom',
+    name: '真实集',
+    corpus: 'live',
+    builtin: false,
+  }
+  const original = fetch
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((input: any, init?: RequestInit) =>
+      String(input).endsWith('/evaluations/runs') && init?.method === 'POST'
+        ? reply(hybridReport)
+        : original(input, init),
+    ),
+  )
+  const user = await sets()
+  const toggle = screen.getByLabelText('比较 BM25 与混合检索（调用向量服务）')
+  expect(toggle).not.toBeChecked()
+  await user.click(toggle)
+  expect(screen.getByText(/可能产生费用/)).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: '运行测评' }))
+  await screen.findByRole('heading', { name: /报告 #8/ })
+  const call = vi
+    .mocked(fetch)
+    .mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith('/evaluations/runs') && init?.method === 'POST',
+    )
+  expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+    dataset_id: 'custom',
+    k: 5,
+    strategies: ['bm25', 'hybrid'],
+  })
+  expect(screen.getByText(/降级 1 题/)).toBeInTheDocument()
+  await user.click(screen.getByText('打磨', { selector: 'summary' }))
+  expect(screen.getByText(/查询向量超时/)).toBeInTheDocument()
+  expect(screen.getAllByText(/实际策略：BM25/).length).toBeGreaterThan(0)
+  expect(screen.getAllByText(/indexed-bm25-2/).length).toBeGreaterThan(0)
+})
+it('uses POST only for explicitly selected hybrid preview and preserves demo legacy runs', async () => {
+  const original = fetch
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((input: any, init?: RequestInit) =>
+      String(input).endsWith('/retrieval/preview') && init?.method === 'POST'
+        ? reply({
+            query: '打磨',
+            k: 5,
+            corpus_size: 1,
+            version: 'hybrid-rrf60-rules-1',
+            bm25: [],
+            hybrid: [],
+            diagnostics: {
+              bm25: {
+                ...retrievalMetadata,
+                requested_strategy: 'bm25',
+                fallback_reason: null,
+              },
+              hybrid: retrievalMetadata,
+            },
+          })
+        : original(input, init),
+    ),
+  )
+  const user = userEvent.setup()
+  render(<App />)
+  await user.type(await screen.findByLabelText('检索问题'), '打磨')
+  await user.click(
+    screen.getByLabelText('比较 BM25 与混合检索（调用向量服务）'),
+  )
+  await user.click(screen.getByRole('button', { name: '对比检索' }))
+  expect(await screen.findByText(/查询向量超时/)).toBeInTheDocument()
+  const call = vi
+    .mocked(fetch)
+    .mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith('/retrieval/preview') && init?.method === 'POST',
+    )
+  expect(JSON.parse(String(call?.[1]?.body))).toEqual({ query: '打磨', k: 5 })
+  await user.click(screen.getByRole('button', { name: '测评集' }))
+  await user.click(screen.getByLabelText('显示合成示例（历史）'))
+  await user.selectOptions(screen.getByLabelText('选择测评集'), 'demo-v1')
+  expect(
+    screen.getByLabelText('比较 BM25 与混合检索（调用向量服务）'),
+  ).toBeDisabled()
+  await user.click(screen.getByRole('button', { name: '运行测评' }))
+  await screen.findByRole('heading', { name: /报告 #1/ })
+  const runCall = vi
+    .mocked(fetch)
+    .mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith('/evaluations/runs') && init?.method === 'POST',
+    )
+  expect(JSON.parse(String(runCall?.[1]?.body))).not.toHaveProperty(
+    'strategies',
+  )
+})
+
+it('opens v2 history without enabling or issuing a new paid evaluation', async () => {
+  history = [hybridReport]
+  const original = fetch
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((input: any, init?: RequestInit) =>
+      String(input).endsWith('/evaluations/runs/8')
+        ? reply(hybridReport)
+        : original(input, init),
+    ),
+  )
+  const user = await sets()
+  await user.click(screen.getByRole('button', { name: /查看报告 #8/ }))
+  await screen.findByRole('heading', { name: /报告 #8/ })
+  expect(screen.getByText(/降级 1 题/)).toBeInTheDocument()
+  expect(
+    screen.getByLabelText('比较 BM25 与混合检索（调用向量服务）'),
+  ).not.toBeChecked()
+  expect(
+    vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === 'POST'),
+  ).toBe(false)
+})

@@ -1,3 +1,4 @@
+import type { RetrievalMetadata } from './retrievalMetadata'
 const BASE = '/api/v1'
 
 export type Source = {
@@ -37,6 +38,7 @@ export type Product = {
   attachment_ids?: number[]
 }
 export type SearchResult = {
+  retrieval?: RetrievalMetadata
   techniques: Technique[]
   products: Product[]
   ranking?: string[]

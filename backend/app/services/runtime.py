@@ -6,14 +6,16 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from ..chat import ChatService
+from .chat import ChatService
 from ..db import create_db_engine, init_db
-from ..experiments import ExperimentService
-from ..ingestion import backfill
+from .experiments import ExperimentService
+from .ingestion import IngestionService
 from ..llm import LangChainProvider
 from ..jobs import JobService
 from ..runtime_config import read_settings
-from ..user_settings import PrivateSettings, compose_prompt
+from ..repositories.settings import PrivateSettings
+from ..prompts import compose_prompt
+from .retrieval import RetrievalService
 
 MAX_BACKUP = 100 * 1024 * 1024
 
@@ -27,6 +29,7 @@ class Runtime:
     experiments: ExperimentService
     user_settings: PrivateSettings
     jobs: JobService
+    retrieval: RetrievalService
 
 
 def build_runtime(
@@ -67,6 +70,14 @@ def build_runtime(
         if runtime_settings is not None
         else dict(getattr(chat.provider, 'settings', None) or config)
     )
+    retrieval = RetrievalService(
+        engine,
+        provider_getter=lambda: chat.provider,
+        mode=(runtime_settings if runtime_settings is not None else config).get(
+            'RETRIEVAL_MODE', 'lexical'
+        ),
+    )
+    chat.retrieval = retrieval
     private_path = (
         Path(settings_path).resolve()
         if settings_path is not None
@@ -80,7 +91,7 @@ def build_runtime(
     chat.system_prompt = experiments.system_prompt = compose_prompt(
         user_settings.data['custom_prompt']
     )
-    return Runtime(engine, storage, backup_limit, chat, experiments, user_settings, jobs)
+    return Runtime(engine, storage, backup_limit, chat, experiments, user_settings, jobs, retrieval)
 
 
 @asynccontextmanager
@@ -98,7 +109,7 @@ async def application_lifespan(app):
             state.experiments.provider = state.chat.provider
         state.experiments.settings = values
         with Session(state.engine) as db:
-            backfill(db, missing_only=True)
+            IngestionService(db).backfill(missing_only=True)
             db.commit()
         state.jobs.recover()
         state.experiments.recover()

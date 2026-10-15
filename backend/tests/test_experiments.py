@@ -70,14 +70,14 @@ def service(tmp_path, provider=None, configured=True):
 @pytest.mark.anyio
 async def test_complete_and_idempotency(tmp_path):
     from app.experiments import ExperimentInput
-    from fastapi import HTTPException
+    from app.services.errors import ServiceError
 
     s = service(tmp_path)
     data = ExperimentInput(dataset_id='demo-v1', mode='retrieval', request_id='a')
     first = await s.start(data)
     assert first['total'] == 6
     assert (await s.start(data))['id'] == first['id']
-    with pytest.raises(HTTPException) as e:
+    with pytest.raises(ServiceError) as e:
         await s.start(data.model_copy(update={'k': 3}))
     assert e.value.status_code == 409
     await s.tasks[first['id']]
@@ -90,11 +90,11 @@ async def test_complete_and_idempotency(tmp_path):
 @pytest.mark.anyio
 async def test_missing_configuration_and_bounds(tmp_path):
     from app.experiments import ExperimentInput
-    from fastapi import HTTPException
+    from app.services.errors import ServiceError
     from pydantic import ValidationError
 
     s = service(tmp_path, configured=False)
-    with pytest.raises(HTTPException) as e:
+    with pytest.raises(ServiceError) as e:
         await s.start(ExperimentInput(dataset_id='demo-v1', mode='retrieval', request_id='a'))
     assert e.value.status_code == 503
     assert s.history() == []
@@ -267,11 +267,11 @@ async def test_actual_sdk_evaluator_offline(monkeypatch):
 @pytest.mark.anyio
 async def test_invalid_workspace_rejected_before_persistence(tmp_path):
     from app.experiments import ExperimentInput
-    from fastapi import HTTPException
+    from app.services.errors import ServiceError
 
     s = service(tmp_path)
     s.settings['LANGSMITH_WORKSPACE_ID'] = 'not-uuid'
-    with pytest.raises(HTTPException) as e:
+    with pytest.raises(ServiceError) as e:
         await s.start(ExperimentInput(dataset_id='demo-v1', mode='retrieval', request_id='a'))
     assert e.value.status_code == 503 and not s.history()
 
@@ -405,3 +405,74 @@ async def test_queued_cancel_synchronizes_experiment_and_job(tmp_path, through_s
     assert s.jobs.snapshot(job['id'])['status'] == 'stopped'
     assert not s.jobs.tasks
     assert s.client.datasets == []
+
+
+@pytest.mark.parametrize('legacy_request_id', ['old', 'experiment:1', '999999', '01'])
+def test_job_links_ignore_unassociated_history(tmp_path, legacy_request_id):
+    from app.experiment_models import ExperimentJob
+    from app.job_models import Job
+
+    s = service(tmp_path)
+    with Session(s.engine) as db:
+        db.add(
+            ExperimentJob(id=1, request_id='valid', request_hash='hash', payload={}, snapshot={})
+        )
+        linked = Job(kind='experiment', request_id='1', request_hash='hash', status='completed')
+        historical = Job(
+            kind='experiment', request_id=legacy_request_id, request_hash='old', status='completed'
+        )
+        db.add_all([linked, historical])
+        db.commit()
+        linked_id, historical_id = linked.id, historical.id
+    assert s.repository.job_links() == {1: linked_id}
+    assert s.repository.job_id(1) == linked_id
+    assert s.repository.job_id(999999) is None
+    assert s.tasks == {}
+    assert s.jobs.snapshot(historical_id)['request_id'] == legacy_request_id
+    assert s.jobs.snapshot(historical_id)['status'] == 'completed'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('start_worker', [False, True])
+async def test_active_experiment_stops_with_unassociated_job_history(tmp_path, start_worker):
+    from app.experiments import ExperimentInput
+    from app.job_models import Job
+
+    s = service(tmp_path)
+    started = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def run(id):
+        s.update(id, status='running')
+        started.set()
+        await gate.wait()
+
+    s.run = run
+    row = await s.start(
+        ExperimentInput(dataset_id='demo-v1', mode='retrieval', request_id='history-stop')
+    )
+    job_id = s.jobs.history('experiment')[0]['id']
+    try:
+        with Session(s.engine) as db:
+            for request_id in ('old', '999999', f'0{row["id"]}'):
+                db.add(
+                    Job(
+                        kind='experiment',
+                        request_id=request_id,
+                        request_hash='old',
+                        status='completed',
+                    )
+                )
+            db.commit()
+        if start_worker:
+            await asyncio.wait_for(started.wait(), timeout=1)
+        assert s.tasks == {row['id']: s.jobs.tasks[job_id]}
+        s.update(row['id'], progress=1)
+        assert s.jobs.snapshot(job_id)['progress'] == 1
+        assert (await s.stop(row['id']))['status'] == 'stopped'
+        assert s.jobs.snapshot(job_id)['status'] == 'stopped'
+        assert not s.tasks
+        assert not s.jobs.tasks
+        assert s.client.datasets == []
+    finally:
+        await s.jobs.shutdown()

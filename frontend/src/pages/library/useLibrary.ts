@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { api, type Product, type SearchResult, type Technique } from '../../api'
 import type { TechniqueValues } from '../../TechniqueEditor'
 import {
@@ -21,7 +21,22 @@ export function useLibrary(mode: string, setMode: (mode: string) => void) {
     updateRecord,
   } = useCatalogue()
   const [results, setResults] = useState<SearchResult | null>(null)
-  const [query, setQuery] = useState('')
+  const [query, setQueryState] = useState('')
+  const searchRequest = useRef(0)
+  const [searchBusy, setSearchBusy] = useState(false)
+  function setQuery(value: string) {
+    searchRequest.current++
+    setQueryState(value)
+    setResults(null)
+    setSubmittedQuery('')
+    setSearchBusy(false)
+  }
+  useEffect(
+    () => () => {
+      searchRequest.current++
+    },
+    [],
+  )
   const [submittedQuery, setSubmittedQuery] = useState('')
   const [filter, setFilter] = useState<Filter>('all')
   const [category, setCategory] = useState('全部')
@@ -29,7 +44,7 @@ export function useLibrary(mode: string, setMode: (mode: string) => void) {
   const [editor, setEditor] = useState<Editor>(null)
   const [operationBusy, setBusy] = useState(false)
   const [uploading, setUploading] = useState(false)
-  const busy = operationBusy || uploading
+  const busy = operationBusy || uploading || searchBusy
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [image, setImage] = useState<{ name: string; url: string } | null>(null)
@@ -42,19 +57,22 @@ export function useLibrary(mode: string, setMode: (mode: string) => void) {
     event.preventDefault()
     setSelected(null)
     setError('')
+    const token = ++searchRequest.current
     const term = query.trim()
+    setResults(null)
     setSubmittedQuery(term)
     if (!term) {
       setResults(null)
       return
     }
-    setBusy(true)
+    setSearchBusy(true)
     try {
-      setResults(await api.search(term))
+      const next = await api.search(term)
+      if (token === searchRequest.current) setResults(next)
     } catch (err) {
-      setError(formatError(err))
+      if (token === searchRequest.current) setError(formatError(err))
     } finally {
-      setBusy(false)
+      if (token === searchRequest.current) setSearchBusy(false)
     }
   }
 

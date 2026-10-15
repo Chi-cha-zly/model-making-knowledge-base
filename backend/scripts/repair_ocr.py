@@ -11,7 +11,8 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from app.db import create_db_engine
-from app.ingestion import digest, ingest_record
+from app.ingestion import digest
+from app.services.ingestion import IngestionService
 from app.ingestion_models import Chunk, Document, Embedding
 from app.models import Attachment, Product, Source, Technique
 from app.services.ocr import local_ocr, recognize_local
@@ -264,7 +265,7 @@ def repair_ocr(database_url, storage_dir, *, apply=False, ocr=None, attachment_i
                     db.flush()
                     current = []
                     for row in owners:
-                        document = ingest_record(db, row, strict=True)
+                        document = IngestionService(db).reindex(row, strict=True)
                         current.append(document.id)
                     # All versions and analysis commit together. The old vectors
                     # remain tied to their old versions; new ones remain pending.

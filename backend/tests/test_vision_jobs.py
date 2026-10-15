@@ -11,6 +11,7 @@ from pg_test_support import test_database_url
 from app.models import Attachment, Source, Technique
 from app.ingestion_models import Chunk, Document
 from app.vision_models import ImageAnalysis
+from app.services.ingestion import IngestionService
 
 DESCRIPTION = {
     'description': '金属外观的肩甲边缘有浅色高光',
@@ -64,6 +65,7 @@ def seed(tmp_path, *, linked=1):
                     content_blocks=[{'type': 'image', 'attachment_id': 1, 'caption': '人工说明'}],
                 )
             )
+        IngestionService(db).backfill()
         db.commit()
     return engine, storage
 
@@ -180,7 +182,9 @@ def test_vision_stale_inputs_never_publish(tmp_path, change):
         else:
             with Session(engine) as db:
                 if change == 'version':
-                    db.get(Technique, 1).summary = 'updated while the model was running'
+                    row = db.get(Technique, 1)
+                    row.summary = 'updated while the model was running'
+                    IngestionService(db).reindex(row)
                 else:
                     db.get(Source, 1).status = 'withdrawn'
                 db.commit()
@@ -222,16 +226,16 @@ def test_vision_index_failure_rolls_back_every_linked_record(tmp_path, monkeypat
 
     engine, storage = seed(tmp_path, linked=2)
     before = state(engine)
-    real = vision_jobs.ingest_record
+    real = IngestionService.reindex
     calls = []
 
-    def fail_second(db, record, **kwargs):
+    def fail_second(service, record, **kwargs):
         calls.append(record.id)
         if len(calls) == 2:
             raise RuntimeError('index failure')
-        return real(db, record, **kwargs)
+        return real(service, record, **kwargs)
 
-    monkeypatch.setattr(vision_jobs, 'ingest_record', fail_second)
+    monkeypatch.setattr(IngestionService, 'reindex', fail_second)
     result = asyncio.run(
         vision_jobs.describe_pending(
             engine, Provider(), storage, apply=True, ocr=lambda path: 'OCR'
@@ -306,6 +310,7 @@ def test_vision_image_limit_bounds_requests_and_next_run_resumes(tmp_path):
         row.content_blocks = row.content_blocks + [
             {'type': 'image', 'attachment_id': attachment.id, 'caption': 'Second'}
         ]
+        IngestionService(db).reindex(row)
         db.commit()
     provider = Provider()
     first = asyncio.run(

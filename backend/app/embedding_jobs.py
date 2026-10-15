@@ -6,8 +6,9 @@ from sqlalchemy.orm import Session
 from .errors import ProviderError
 from .ingestion import digest
 from .ingestion_models import Chunk, Document, DocumentSource, Embedding
-from .llm import validate_vectors
+from .embedding_contract import embedding_text, validate_vectors, embedding_batch_limit
 from .models import Product, Source, Technique
+from .repositories.retrieval import visible_chunk
 
 PENDING = ('pending', 'failed')
 MAX_CHUNKS_PER_DOCUMENT = 512
@@ -53,7 +54,7 @@ def _visible():
 
 def _embedding_text(chunk):
     # Title-only records and empty OCR/image blocks still have real title metadata.
-    return chunk.content if chunk.content.strip() else chunk.payload.get('title', '')
+    return embedding_text(chunk.content, chunk.payload)
 
 
 def _snapshot(db, document_id, version):
@@ -66,7 +67,7 @@ def _snapshot(db, document_id, version):
                 Document.id == document_id,
                 Document.active_version == version,
                 Chunk.version == version,
-                _visible(),
+                visible_chunk(),
             )
             .order_by(Chunk.ordinal)
             .limit(MAX_CHUNKS_PER_DOCUMENT + 1)
@@ -120,6 +121,7 @@ async def embed_pending(
         raise ValueError('batch_size must be between 1 and 64')
     if type(max_documents) is not int or not 1 <= max_documents <= 100:
         raise ValueError('max_documents must be between 1 and 100')
+    batch_size = min(batch_size, embedding_batch_limit(provider.embedding_model))
     with Session(engine) as db:
         documents = list(
             db.execute(
@@ -129,7 +131,7 @@ async def embed_pending(
                 .where(
                     Chunk.version == Document.active_version,
                     Embedding.status.in_(PENDING),
-                    _visible(),
+                    visible_chunk(),
                 )
                 .distinct()
                 .order_by(Document.id)
@@ -181,16 +183,18 @@ async def embed_pending(
             vectors = []
             for offset in range(0, len(targets), batch_size):
                 # Permission/version may change while another document or batch is encoding.
+                batch = targets[offset : offset + batch_size]
                 with Session(engine) as db:
-                    if not db.scalar(
-                        select(Document.id).where(
-                            Document.id == document_id,
-                            Document.active_version == version,
-                            _visible(),
-                        )
+                    current = {e.id: (e, c) for e, c in _snapshot(db, document_id, version)}
+                    if any(
+                        eid not in current
+                        or current[eid][0].status not in PENDING
+                        or current[eid][0].content_hash != fingerprint
+                        or current[eid][1].content != content
+                        or _embedding_text(current[eid][1]) != text
+                        for eid, text, fingerprint, content in batch
                     ):
                         break
-                batch = targets[offset : offset + batch_size]
                 vectors.extend(await provider.embed([text for _, text, _, _ in batch]))
             else:
                 validate_vectors(vectors, len(targets))

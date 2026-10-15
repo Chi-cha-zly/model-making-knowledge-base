@@ -1,3 +1,4 @@
+import RetrievalStatus from '../../components/RetrievalStatus'
 import { useLayoutEffect, useRef } from 'react'
 import {
   BookOpenText,
@@ -101,6 +102,9 @@ export default function BrowsePage({
               : `共 ${list.length} 条记录，可按类型与工序筛选`}
           </p>
           {results?.ranking && <p>按相关性显示前 20 条结果</p>}
+          {results?.retrieval && (
+            <RetrievalStatus metadata={results.retrieval} />
+          )}
         </div>
       </div>
       <div className="workspace">
