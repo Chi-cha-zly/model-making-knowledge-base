@@ -14,5 +14,7 @@ export default defineConfig(({ mode }) => ({
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
     maxWorkers: 2,
+    // user-event flows take <0.5s idle but exceed 5s when the machine is busy.
+    testTimeout: 15000,
   },
 }))
