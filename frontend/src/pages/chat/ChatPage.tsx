@@ -1,4 +1,4 @@
-import AgentTrace from '../../components/AgentTrace'
+import AgentTrace, { AgentLiveProgress } from '../../components/AgentTrace'
 import RetrievedImages from '../../components/RetrievedImages'
 import { useLocation, useNavigate } from 'react-router'
 import {
@@ -16,6 +16,7 @@ import {
   chatApi,
   isActive,
   type AgentConfig,
+  type AgentProgress,
   type Citation,
   type Conversation,
   type ConversationDetail,
@@ -39,6 +40,10 @@ export default function ChatWorkbench({
   onOpenReference: (citation: Citation) => void
 }) {
   const [config, setConfig] = useState<AgentConfig | null>(null)
+  const [progress, setProgress] = useState<{
+    runId: number
+    value: AgentProgress
+  } | null>(null)
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [titleSearch, setTitleSearch] = useState('')
   const visibleConversations = conversations.filter((item) =>
@@ -159,6 +164,15 @@ export default function ChatWorkbench({
     stream.onopen = () => {
       if (live) setConnection('实时连接')
     }
+    stream.addEventListener('progress', (event) => {
+      if (!live) return
+      try {
+        const value = JSON.parse((event as MessageEvent).data) as AgentProgress
+        setProgress({ runId: latest.id, value })
+      } catch {
+        // Progress is advisory; the next snapshot still updates the answer.
+      }
+    })
     stream.addEventListener('snapshot', (event) => {
       if (!live) return
       try {
@@ -536,6 +550,9 @@ export default function ChatWorkbench({
                       </div>
                       {run?.error && (
                         <p className="chat-run-error">{run.error}</p>
+                      )}
+                      {run && isActive(run) && progress?.runId === run.id && (
+                        <AgentLiveProgress progress={progress.value} />
                       )}
                       {run && config?.mode === 'agent' && !isActive(run) && (
                         <AgentTrace runId={run.id} />

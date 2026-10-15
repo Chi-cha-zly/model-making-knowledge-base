@@ -26,6 +26,8 @@ class ChatService:
         # Agent mode: tool-calling agents decide when and what to retrieve.
         self.agent_mode = agent_mode
         self.agent_options = AgentOptions()
+        # In-memory progress of running agent runs (single API process).
+        self.live = {}
         self.repository = ChatRepository(engine)
         self.lock = asyncio.Lock()
         self.tasks = {}
@@ -97,6 +99,8 @@ class ChatService:
             return True
 
         collector = EvidenceCollector() if self.uses_agent else None
+        if collector is not None:
+            self.live[rid] = collector
         try:
             if collector is not None:
                 run, turns = self.repository.begin_generation(rid)
@@ -160,6 +164,7 @@ class ChatService:
                 else '生成失败，已保留部分文本；请检查模型服务后重试。',
             )
         finally:
+            self.live.pop(rid, None)
             self.tasks.pop(rid, None)
             self.retrieval_queries.pop(rid, None)
             if collector is not None:
@@ -177,6 +182,12 @@ class ChatService:
             if invalid:
                 collector.step('invalid_citations', keys=invalid)
 
+    def progress(self, rid):
+        collector = self.live.get(rid)
+        if collector is None:
+            return None
+        return {'activity': collector.activity, 'steps': list(collector.trace[-8:])}
+
     @property
     def uses_agent(self):
         return self.agent_mode and self.retrieval is not None
@@ -185,7 +196,10 @@ class ChatService:
         # Same history budget as the RAG path, without its evidence system message.
         history = compose_messages('', [], turns)[1:-1]
         try:
-            async with self.provider.agent_models() as (main, research):
+            async with self.provider.agent_models(self.agent_options.research_reasoning) as (
+                main,
+                research,
+            ):
                 agent = build_main_agent(
                     main,
                     research,

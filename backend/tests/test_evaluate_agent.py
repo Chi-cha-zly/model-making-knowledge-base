@@ -17,7 +17,7 @@ class Provider:
         self.scripts = list(scripts)
 
     @asynccontextmanager
-    async def agent_models(self):
+    async def agent_models(self, research_reasoning=None):
         yield self.scripts.pop(0)
 
 

@@ -313,7 +313,7 @@ class LangChainProvider:
         return cls()
 
     @asynccontextmanager
-    async def _model(self, model, *, streaming=False, tools=False):
+    async def _model(self, model, *, streaming=False, tools=False, reasoning_effort=None):
         if not self.configured:
             raise ProviderError('尚未配置模型；请设置 AI_BASE_URL、AI_MODEL 和 AI_API_KEY。')
         responses = []
@@ -331,7 +331,8 @@ class LangChainProvider:
                 # Tool calling with reasoning needs OpenAI's Responses API; compatible
                 # services may lack /responses, so they get tools without reasoning.
                 responses_api = tools and self.official_openai
-                reasoning = self.reasoning_effort if (responses_api or not tools) else None
+                configured = reasoning_effort or self.reasoning_effort
+                reasoning = configured if (responses_api or not tools) else None
                 yield ChatOpenAI(
                     model=model,
                     api_key=self.api_key or 'local-no-key',
@@ -427,10 +428,12 @@ class LangChainProvider:
             return output
 
     @asynccontextmanager
-    async def agent_models(self):
+    async def agent_models(self, research_reasoning=None):
         """Streaming model for the main agent and a plain one for the research sub-agent."""
         async with self._model(self.model, streaming=True, tools=True) as main:
-            async with self._model(self.model, tools=True) as research:
+            async with self._model(
+                self.model, tools=True, reasoning_effort=research_reasoning
+            ) as research:
                 yield main, research
 
     @property

@@ -196,7 +196,7 @@ def test_chat_service_agent_mode_persists_citations_and_trace():
         model = 'fake'
 
         @asynccontextmanager
-        async def agent_models(self):
+        async def agent_models(self, research_reasoning=None):
             yield (
                 scripted(call('research', {'task': 'NMM'}), AIMessage(content='见 [technique:7]')),
                 scripted(
@@ -299,7 +299,7 @@ def test_stopping_an_agent_run_keeps_trace_and_verified_citations():
         model = 'fake'
 
         @asynccontextmanager
-        async def agent_models(self):
+        async def agent_models(self, research_reasoning=None):
             yield (
                 scripted(
                     call('read_technique', {'key': 'technique:7'}, id='x'),
@@ -330,6 +330,112 @@ def test_stopping_an_agent_run_keeps_trace_and_verified_citations():
             # The cancelled search never completed, so it left no step.
             assert kinds == ['search', 'research']
             assert run['id'] not in service.tasks
+        finally:
+            engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_rule_report_uses_one_subagent_call_and_marks_empty_queries_missing():
+    from app.agents.knowledge import AgentOptions
+
+    retrieval = FakeRetrieval({'原理': ['technique:7'], '税率': []})
+    both = AIMessage(
+        content='',
+        tool_calls=[
+            {'name': 'search_library', 'args': {'query': '原理'}, 'id': 's1'},
+            {'name': 'search_library', 'args': {'query': '税率'}, 'id': 's2'},
+        ],
+    )
+    research_model = scripted(both)
+    main_model = scripted(
+        call('research', {'task': '原理和税率'}), AIMessage(content='见 [technique:7]')
+    )
+    collector = EvidenceCollector()
+    agent = build_main_agent(
+        main_model, research_model, retrieval, collector, '规则', AgentOptions(rule_report=True)
+    )
+    answer = asyncio.run(collect(agent, '问题'))
+    assert len(research_model.seen) == 1
+    observation = json.loads(
+        [m for m in main_model.seen[1] if isinstance(m, ToolMessage)][0].content
+    )
+    assert observation['covered'] == [{'aspect': '原理', 'evidence_keys': ['technique:7']}]
+    assert observation['missing'] == ['税率']
+    assert [c['id'] for c in final_citations(retrieval, collector, answer)] == [7]
+
+
+def test_direct_search_skips_the_subagent_and_cites_only_what_is_cited():
+    from app.agents.knowledge import AgentOptions
+
+    retrieval = FakeRetrieval({'AK11190': ['technique:33', 'technique:9']})
+    main_model = scripted(
+        call('quick_search', {'query': 'AK11190'}), AIMessage(content='见 [technique:33]')
+    )
+    research_model = scripted()
+    collector = EvidenceCollector()
+    agent = build_main_agent(
+        main_model, research_model, retrieval, collector, '规则', AgentOptions(direct_search=True)
+    )
+    answer = asyncio.run(collect(agent, 'AK11190 是什么'))
+    assert research_model.seen == []
+    assert collector.trace[0]['source'] == 'main'
+    assert [c['id'] for c in final_citations(retrieval, collector, answer)] == [33]
+
+
+def test_quick_search_is_not_offered_unless_enabled():
+    main_model = scripted(call('quick_search', {'query': 'x'}), AIMessage(content='完成'))
+    collector = EvidenceCollector()
+    agent = build_main_agent(main_model, scripted(), FakeRetrieval({}), collector, '规则')
+    asyncio.run(collect(agent, '问题'))
+    assert collector.trace == []
+
+
+def test_live_progress_reports_current_search_and_clears_after_run():
+    from pg_test_support import test_database_url
+
+    from app.chat import ChatService, TurnInput
+    from app.db import create_db_engine
+
+    gate, release = asyncio.Event(), asyncio.Event()
+
+    class GatedRetrieval(FakeRetrieval):
+        async def search(self, query, k=6, **kwargs):
+            gate.set()
+            await release.wait()
+            return await super().search(query, k, **kwargs)
+
+    retrieval = GatedRetrieval({'NMM': ['technique:7']})
+
+    class Provider:
+        configured = True
+        model = 'fake'
+
+        @asynccontextmanager
+        async def agent_models(self, research_reasoning=None):
+            yield (
+                scripted(
+                    call('research', {'task': 'NMM 原理'}), AIMessage(content='见 [technique:7]')
+                ),
+                scripted(
+                    call('search_library', {'query': 'NMM'}, id='s1'),
+                    report([('原理', ['technique:7'])]),
+                ),
+            )
+
+    async def scenario():
+        engine = create_db_engine(test_database_url('agent progress'))
+        retrieval.engine = engine
+        service = ChatService(engine, Provider(), retrieval=retrieval, agent_mode=True)
+        cid = service.create_conversation('agent')['id']
+        try:
+            async with service.lock:
+                run = await service.create_run(cid, TurnInput(content='NMM', request_id='a'))
+            await asyncio.wait_for(gate.wait(), 5)
+            assert service.progress(run['id']) == {'activity': '正在检索：NMM', 'steps': []}
+            release.set()
+            await asyncio.wait_for(service.tasks[run['id']], 5)
+            assert service.progress(run['id']) is None
         finally:
             engine.dispose()
 

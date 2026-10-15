@@ -38,6 +38,9 @@ class Stream {
   snapshot(run: any) {
     this.listeners.snapshot?.({ data: JSON.stringify(run) })
   }
+  progress(value: any) {
+    this.listeners.progress?.({ data: JSON.stringify(value) })
+  }
 }
 function reply(body: unknown, status = 200) {
   return Promise.resolve(new Response(JSON.stringify(body), { status }))
@@ -164,6 +167,35 @@ it('replaces replayed stream snapshots and retains partial output after stopping
   expect(await screen.findByText('已停止')).toBeInTheDocument()
   expect(screen.getByText('先剪下零件')).toBeInTheDocument()
   expect(Stream.all.at(-1)!.closed).toBe(true)
+})
+it('shows live agent progress while the answer is pending and hides it when done', async () => {
+  const user = await openChat()
+  await user.type(
+    screen.getByRole('textbox', { name: '制作问题或补充要求' }),
+    '金色 NMM 怎么画？',
+  )
+  await user.click(screen.getByRole('button', { name: '发送' }))
+  await waitFor(() => expect(Stream.all.length).toBeGreaterThan(0))
+  act(() => {
+    Stream.all.at(-1)!.progress({
+      activity: '正在检索：金色 NMM 肩甲',
+      steps: [
+        {
+          kind: 'search',
+          query: 'NMM 原理',
+          strategy: 'rerank',
+          keys: ['technique:7'],
+        },
+      ],
+    })
+  })
+  expect(screen.getByText('正在检索：金色 NMM 肩甲')).toBeInTheDocument()
+  expect(screen.getByText(/检索“NMM 原理” → technique:7/)).toBeInTheDocument()
+  runs[0].content = '先铺底色'
+  runs[0].status = 'completed'
+  act(() => Stream.all.at(-1)!.snapshot(runs[0]))
+  expect(await screen.findByText('先铺底色')).toBeInTheDocument()
+  expect(screen.queryByText('正在检索：金色 NMM 肩甲')).not.toBeInTheDocument()
 })
 it('retries without duplicating the user question and steers with a new instruction', async () => {
   messages = [

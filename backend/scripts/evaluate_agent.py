@@ -8,6 +8,7 @@ import argparse
 import asyncio
 import json
 import statistics
+from dataclasses import asdict
 from pathlib import Path
 from time import perf_counter
 
@@ -97,7 +98,7 @@ def summarize(rows):
 async def run_case(case, provider, retrieval, system_prompt, options):
     collector, counter = EvidenceCollector(), CallCounter()
     started = perf_counter()
-    async with provider.agent_models() as (main, research):
+    async with provider.agent_models(options.research_reasoning) as (main, research):
         agent = build_main_agent(main, research, retrieval, collector, system_prompt, options)
         messages = [{'role': 'user', 'content': case['query']}]
         answer = ''.join(
@@ -144,18 +145,24 @@ def main(argv=None, *, provider=None, retrieval=None):
     parser.add_argument('--max-calls', type=int, default=0)
     parser.add_argument('--max-searches', type=int, default=4)
     parser.add_argument('--parallel-search', action='store_true')
+    parser.add_argument('--direct-search', action='store_true')
+    parser.add_argument('--research-reasoning', default=None)
+    parser.add_argument('--rule-report', action='store_true')
     parser.add_argument('--label', default='')
     args = parser.parse_args(argv)
     output = validate_report_path(args.report, args.storage_dir)
     cases = json.loads(args.dataset.read_text())['cases']
-    options = AgentOptions(max_searches=args.max_searches, parallel_search=args.parallel_search)
+    options = AgentOptions(
+        max_searches=args.max_searches,
+        parallel_search=args.parallel_search,
+        direct_search=args.direct_search,
+        research_reasoning=args.research_reasoning,
+        rule_report=args.rule_report,
+    )
     result = {
         'status': 'dry_run',
         'label': args.label,
-        'options': {
-            'max_searches': options.max_searches,
-            'parallel_search': options.parallel_search,
-        },
+        'options': asdict(options),
         'cases': len(cases),
         'max_calls': args.max_calls,
     }

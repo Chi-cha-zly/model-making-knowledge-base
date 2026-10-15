@@ -67,12 +67,18 @@ def install_chat(app, service):
         service.snapshot(rid)
 
         async def stream():
-            previous = None
+            previous = previous_progress = None
             while True:
                 try:
                     snapshot = service.snapshot(rid)
                 except ServiceError:
                     return
+                progress = service.progress(rid)
+                if progress is not None:
+                    current = json.dumps(progress, ensure_ascii=False)
+                    if current != previous_progress:
+                        yield f'event: progress\ndata: {current}\n\n'
+                        previous_progress = current
                 data = json.dumps(snapshot, ensure_ascii=False)
                 if data != previous:
                     yield f'event: snapshot\ndata: {data}\n\n'

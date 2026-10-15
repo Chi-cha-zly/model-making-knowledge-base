@@ -488,3 +488,16 @@ def test_sse_stream_requires_a_terminal_event(body, complete):
     else:
         with pytest.raises(ProviderError):
             asyncio.run(read())
+
+
+def test_research_model_reasoning_can_be_overridden():
+    from app import llm
+
+    async def models():
+        provider = llm.LangChainProvider(
+            settings=settings(AI_BASE_URL='https://api.openai.com/v1', AI_REASONING_EFFORT='low')
+        )
+        async with provider.agent_models('none') as (main, research):
+            return main.reasoning_effort, research.reasoning_effort
+
+    assert asyncio.run(models()) == ('low', 'none')

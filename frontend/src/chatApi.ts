@@ -54,6 +54,7 @@ export type TraceStep =
   | { kind: 'read'; key: string; found: boolean }
   | { kind: 'invalid_citations'; keys: string[] }
 export type AgentTrace = { run_id: number; steps: TraceStep[] }
+export type AgentProgress = { activity: string; steps: TraceStep[] }
 async function request<T>(
   path: string,
   method = 'GET',

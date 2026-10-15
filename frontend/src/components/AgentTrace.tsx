@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { chatApi, type TraceStep } from '../chatApi'
+import { chatApi, type AgentProgress, type TraceStep } from '../chatApi'
 
-function describe(step: TraceStep) {
+export function describe(step: TraceStep) {
   switch (step.kind) {
     case 'research':
       return `检索助手任务：${step.task}（检索 ${step.searches} 次${
@@ -48,5 +48,22 @@ export default function AgentTrace({ runId }: { runId: number }) {
         </ol>
       )}
     </details>
+  )
+}
+
+export function AgentLiveProgress({ progress }: { progress: AgentProgress }) {
+  return (
+    <div className="agent-progress" role="status" aria-live="polite">
+      <p className="agent-activity">{progress.activity}</p>
+      {!!progress.steps.length && (
+        <ol>
+          {progress.steps.map((step, index) => (
+            <li key={index} className={`trace-${step.kind}`}>
+              {describe(step)}
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
   )
 }
