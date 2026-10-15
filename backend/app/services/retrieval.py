@@ -17,6 +17,26 @@ from ..retrieval_types import RetrievalResult
 LOGGER = logging.getLogger(__name__)
 BM25_VERSION = 'indexed-bm25-2'
 HYBRID_VERSION = 'hybrid-rrf60-rules-1'
+RERANK_VERSION = 'hybrid-rrf60-rerank-1'
+# Vector query failed, so only lexical candidates were reranked.
+BM25_RERANK_VERSION = 'bm25-rerank-1'
+STRATEGIES = ('bm25', 'hybrid', 'rerank')
+# Exact identifier/alias hits stay even when a cross-encoder scores a bare code low.
+PROTECTED_REASONS = ('编号规范化精确匹配', '别名精确匹配')
+
+
+def bounded_query(query):
+    """Same head+tail window prepare_query uses for over-long queries."""
+    return query[:1500] + query[-500:] if len(query) > 2000 else query
+
+
+def is_protected(hit):
+    return any(reason.startswith(PROTECTED_REASONS) for reason in hit['reasons'])
+
+
+def apply_threshold(scored_hits, threshold):
+    """Keep reranked hits at or above ``threshold`` plus exact identifier/alias hits."""
+    return [hit for hit in scored_hits if hit['score'] >= threshold or is_protected(hit)]
 
 
 @dataclass(frozen=True)
@@ -44,13 +64,28 @@ def rule_tier(document, query):
 
 
 class RetrievalService:
-    def __init__(self, engine, provider_getter, *, mode='lexical', timeout=10):
-        if mode not in ('lexical', 'hybrid'):
-            raise ValueError('RETRIEVAL_MODE must be lexical or hybrid')
+    def __init__(
+        self,
+        engine,
+        provider_getter,
+        *,
+        mode='lexical',
+        timeout=10,
+        reranker_getter=None,
+        rerank_min_score=0.0,
+        rerank_candidates=20,
+    ):
+        if mode not in ('lexical', 'hybrid', 'rerank'):
+            raise ValueError('RETRIEVAL_MODE must be lexical, hybrid or rerank')
+        if not 0 <= rerank_min_score <= 1 or not 1 <= rerank_candidates <= 20:
+            raise ValueError('Invalid rerank threshold or candidate count')
         self.engine = engine
         self.provider_getter = provider_getter
         self.mode = mode
         self.timeout = timeout
+        self.reranker_getter = reranker_getter or (lambda: None)
+        self.rerank_min_score = rerank_min_score
+        self.rerank_candidates = rerank_candidates
 
     def _has_vectors(self, model):
         with Session(self.engine) as db:
@@ -191,25 +226,113 @@ class RetrievalService:
     async def search(self, query, *, k=6, strategy=None, semantic_query=None):
         if not isinstance(query, str) or len(query) > 64000:
             raise ValueError('query must be a string of at most 64000 characters')
-        selected = strategy or ('hybrid' if self.mode == 'hybrid' else 'bm25')
-        if selected not in ('bm25', 'hybrid') or type(k) is not int or not 1 <= k <= 20:
+        selected = strategy or {'lexical': 'bm25'}.get(self.mode, self.mode)
+        if selected not in STRATEGIES or type(k) is not int or not 1 <= k <= 20:
             raise ValueError('Invalid retrieval strategy or result limit')
         started = perf_counter()
         prepared = (
             await self.prepare_query(query if semantic_query is None else semantic_query)
-            if selected == 'hybrid'
+            if selected != 'bm25'
             else None
         )
-        result = await asyncio.to_thread(self._search, query, k, selected, prepared)
+        base = 'hybrid' if selected == 'rerank' else selected
+        limit = self.rerank_candidates if selected == 'rerank' else k
+        result = await asyncio.to_thread(self._search, query, limit, base, prepared)
+        if selected == 'rerank':
+            # Chat joins several turns oldest-first; score against the current question.
+            result = await self.rerank(
+                semantic_query if semantic_query is not None else bounded_query(query),
+                result,
+                k,
+            )
         result = await asyncio.to_thread(self.revalidate, result)
         result.diagnostics['latency_ms'] = round((perf_counter() - started) * 1000, 2)
-        if result.diagnostics.get('fallback_reason'):
-            LOGGER.warning(
-                'retrieval_fallback reason=%s model=%s',
-                result.diagnostics['fallback_reason'],
-                result.diagnostics['model'],
-            )
+        for key in ('fallback_reason', 'rerank_fallback_reason'):
+            if result.diagnostics.get(key):
+                LOGGER.warning('retrieval_fallback %s=%s', key, result.diagnostics[key])
         return result
+
+    async def rerank(self, query, result, k, *, min_score=None):
+        """Rescore fused candidates; drop those below the calibrated threshold.
+
+        A failed rerank never hides evidence: the fused order is kept, unfiltered,
+        and the fallback reason is reported.
+        """
+        threshold = self.rerank_min_score if min_score is None else min_score
+        reranker = self.reranker_getter()
+        diagnostics = {
+            **result.diagnostics,
+            'rerank_base': result.effective_strategy,
+            'rerank_model': getattr(reranker, 'model', None),
+            'rerank_min_score': threshold,
+            'rerank_candidates': len(result.hits),
+            'rerank_ms': 0,
+            'rerank_dropped': 0,
+            'rerank_fallback_reason': None,
+        }
+        hits = result.hits
+        if not hits:
+            # Nothing recalled is already the "no evidence" answer.
+            return replace(
+                result,
+                requested_strategy='rerank',
+                effective_strategy='rerank',
+                version=RERANK_VERSION,
+                diagnostics=diagnostics,
+            )
+        if reranker is None or not getattr(reranker, 'configured', False):
+            diagnostics['rerank_fallback_reason'] = 'unconfigured'
+            return replace(
+                result,
+                hits=self._renumber(hits[:k]),
+                requested_strategy='rerank',
+                diagnostics=diagnostics,
+            )
+        started = perf_counter()
+        try:
+            scores = await asyncio.wait_for(
+                reranker.rerank(query, [hit['title'] + '\n' + hit['excerpt'] for hit in hits]),
+                timeout=self.timeout,
+            )
+        except (TimeoutError, ProviderError) as error:
+            diagnostics['rerank_ms'] = round((perf_counter() - started) * 1000, 2)
+            diagnostics['rerank_fallback_reason'] = (
+                'timeout' if isinstance(error, TimeoutError) else 'provider_error'
+            )
+            return replace(
+                result,
+                hits=self._renumber(hits[:k]),
+                requested_strategy='rerank',
+                diagnostics=diagnostics,
+            )
+        diagnostics['rerank_ms'] = round((perf_counter() - started) * 1000, 2)
+        scored = sorted(
+            (
+                {
+                    **hit,
+                    'score': round(score, 6),
+                    'reasons': [*hit['reasons'], f'重排相关度 {score:.3f}（{reranker.model}）'],
+                }
+                for hit, score in zip(hits, scores)
+            ),
+            key=lambda hit: (-is_protected(hit), -hit['score']),
+        )
+        kept = apply_threshold(scored, threshold)
+        diagnostics['rerank_dropped'] = len(scored) - len(kept)
+        return replace(
+            result,
+            hits=self._renumber(kept[:k]),
+            requested_strategy='rerank',
+            effective_strategy='rerank',
+            version=RERANK_VERSION
+            if result.effective_strategy == 'hybrid'
+            else BM25_RERANK_VERSION,
+            diagnostics=diagnostics,
+        )
+
+    @staticmethod
+    def _renumber(hits):
+        return [{**hit, 'rank': rank} for rank, hit in enumerate(hits, 1)]
 
     def revalidate(self, result):
         with Session(self.engine) as db:

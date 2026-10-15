@@ -224,3 +224,12 @@ def test_runtime_retrieval_mode_uses_explicit_settings_then_runtime_configuratio
     assert explicit.state.retrieval.mode == 'lexical'
     app.state.engine.dispose()
     explicit.state.engine.dispose()
+
+
+@pytest.mark.parametrize('headers', [{'Sec-Fetch-Site': 'cross-site'}])
+def test_rerank_mode_search_also_rejects_cross_site(client, headers):
+    client, _, provider = client
+    client.app.state.retrieval.mode = 'rerank'
+    result = client.get('/api/v1/search?q=肩甲', headers=headers)
+    assert result.status_code == 403, result.text
+    assert provider.calls == []

@@ -93,7 +93,7 @@ def withdraw_product(id: int, service: CatalogService = Depends(get_catalog)):
 
 @router.get('/search')
 async def search(request: Request, q: str = Query(min_length=1, max_length=2000)):
-    if request.app.state.retrieval.mode == 'hybrid':
+    if request.app.state.retrieval.mode != 'lexical':
         from .evaluation import paid_origin
 
         paid_origin(request)

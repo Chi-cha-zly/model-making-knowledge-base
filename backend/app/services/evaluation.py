@@ -13,7 +13,13 @@ from ..evaluation_metrics import aggregate_metrics, case_metrics, fingerprint
 from ..repositories.evaluation import EvaluationRepository, dataset
 from ..retrieval import load_documents, rank_documents, RETRIEVAL_VERSION
 from .errors import ServiceError
-from .retrieval import BM25_VERSION, HYBRID_VERSION
+from .retrieval import (
+    BM25_VERSION,
+    HYBRID_VERSION,
+    RERANK_VERSION,
+    apply_threshold,
+    is_protected,
+)
 
 
 class EvaluationService:
@@ -133,7 +139,7 @@ class EvaluationService:
             )
             return EvaluationRepository(db).save_report(payload)
 
-    def _compare_snapshot(self, cases, k, prepared):
+    def _compare_snapshot(self, cases, k, prepared, rerank=False):
         # Both online strategies run on exactly one materialized database snapshot.
         with (
             self.engine.connect().execution_options(isolation_level='REPEATABLE READ') as conn,
@@ -144,6 +150,15 @@ class EvaluationService:
             results = []
             for case, query_vector in zip(cases, prepared):
                 pair = {}
+                if rerank:
+                    # Candidates for the cross-encoder come from the same snapshot.
+                    pair['rerank'] = self.retrieval.search_prepared(
+                        db,
+                        case['query'],
+                        k=self.retrieval.rerank_candidates,
+                        strategy='hybrid',
+                        prepared=query_vector,
+                    )
                 for strategy in ('bm25', 'hybrid'):
                     start = perf_counter()
                     result = self.retrieval.search_prepared(
@@ -155,16 +170,18 @@ class EvaluationService:
                         2,
                     )
                     pair[strategy] = result
+                ranked = {name: pair[name] for name in ('bm25', 'hybrid')}
                 results.append(
                     {
                         **deepcopy(case),
-                        **{strategy: result.hits for strategy, result in pair.items()},
+                        '_pair': pair,
+                        **{strategy: result.hits for strategy, result in ranked.items()},
                         'metrics': {
                             strategy: case_metrics(result.hits, case['judgments'], k)
-                            for strategy, result in pair.items()
+                            for strategy, result in ranked.items()
                         },
                         'diagnostics': {
-                            strategy: result.metadata() for strategy, result in pair.items()
+                            strategy: result.metadata() for strategy, result in ranked.items()
                         },
                     }
                 )
@@ -187,8 +204,12 @@ class EvaluationService:
         payload = await self.compare_dataset(value, data.k)
         return await asyncio.to_thread(self._publish, value, payload)
 
-    async def compare_dataset(self, value, k=5):
-        """Compare a file or stored dataset without writing a historical report."""
+    async def compare_dataset(self, value, k=5, *, rerank=False):
+        """Compare a file or stored dataset without writing a historical report.
+
+        With ``rerank`` the cross-encoder runs at threshold 0 and every candidate
+        score is kept, so thresholds can be swept offline without new calls.
+        """
         if value['corpus'] != 'live':
             raise ServiceError(422, '混合检索比较仅支持真实资料测评集。')
         # Validate labels before any paid query is sent.
@@ -199,23 +220,51 @@ class EvaluationService:
         for case in value['cases']:
             prepared.append(await self.retrieval.prepare_query(case['query']))
         identity, keys, cases = await asyncio.to_thread(
-            self._compare_snapshot, value['cases'], k, prepared
+            self._compare_snapshot, value['cases'], k, prepared, rerank
         )
         self._check_labels(value, keys)
         with Session(self.engine) as db:
             current, _ = EvaluationRepository(db).corpus_identity()
         if current != identity:
             raise ServiceError(409, '测评期间资料已变化，请重新运行。')
-        payload = self._payload(
-            value, k, keys, identity, cases, {'bm25': BM25_VERSION, 'hybrid': HYBRID_VERSION}
-        )
+        versions = {'bm25': BM25_VERSION, 'hybrid': HYBRID_VERSION}
+        for case in cases:
+            pair = case.pop('_pair')
+            if not rerank:
+                continue
+            full = await self.retrieval.rerank(
+                case['query'], pair['rerank'], self.retrieval.rerank_candidates, min_score=0
+            )
+            full.diagnostics['latency_ms'] = round(
+                pair['hybrid'].diagnostics['latency_ms'] + full.diagnostics['rerank_ms'], 2
+            )
+            scored = full.hits if full.effective_strategy == 'rerank' else []
+            case['rerank_scored'] = [
+                {'key': hit['key'], 'score': hit['score'], 'protected': is_protected(hit)}
+                for hit in scored
+            ]
+            hits = (
+                apply_threshold(scored, self.retrieval.rerank_min_score) if scored else full.hits
+            )[:k]
+            hits = [{**hit, 'rank': rank} for rank, hit in enumerate(hits, 1)]
+            case['rerank'] = hits
+            case['metrics']['rerank'] = case_metrics(hits, case['judgments'], k)
+            case['diagnostics']['rerank'] = full.metadata()
+        if rerank:
+            versions['rerank'] = RERANK_VERSION
+        payload = self._payload(value, k, keys, identity, cases, versions)
         payload.update(
             report_version=2,
-            strategies=['bm25', 'hybrid'],
+            strategies=list(versions),
             degraded_cases=sum(
                 case['diagnostics']['hybrid']['effective_strategy'] != 'hybrid' for case in cases
             ),
         )
+        if rerank:
+            payload['rerank_degraded_cases'] = sum(
+                case['diagnostics']['rerank']['effective_strategy'] != 'rerank' for case in cases
+            )
+            payload['rerank_min_score'] = self.retrieval.rerank_min_score
         return payload
 
     async def preview(self, query, k):

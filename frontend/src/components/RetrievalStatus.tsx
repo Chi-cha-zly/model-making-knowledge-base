@@ -8,6 +8,16 @@ const fallbackLabels: Record<string, string> = {
   provider_error: '向量服务请求失败',
   invalid_vector: '向量服务返回无效结果',
 }
+const strategyLabels: Record<string, string> = {
+  bm25: 'BM25 词法检索',
+  hybrid: '混合检索',
+  rerank: '混合检索 + 重排',
+}
+const rerankFallbackLabels: Record<string, string> = {
+  unconfigured: '未配置重排服务',
+  timeout: '重排服务超时',
+  provider_error: '重排服务请求失败',
+}
 export default function RetrievalStatus({
   metadata,
 }: {
@@ -17,10 +27,8 @@ export default function RetrievalStatus({
     <div className="evaluation-note">
       <p>
         实际策略：
-        {metadata.effective_strategy === 'hybrid'
-          ? '混合检索'
-          : 'BM25 词法检索'}{' '}
-        · {metadata.version}
+        {strategyLabels[metadata.effective_strategy] ?? 'BM25 词法检索'} ·{' '}
+        {metadata.version}
       </p>
       {metadata.fallback_reason && (
         <p>
@@ -40,6 +48,23 @@ export default function RetrievalStatus({
           总耗时 {metadata.latency_ms.toFixed(1)} ms
           {metadata.embedding_ms !== undefined
             ? ` · 查询向量 ${metadata.embedding_ms.toFixed(1)} ms`
+            : ''}
+        </p>
+      )}
+      {metadata.rerank_fallback_reason && (
+        <p>
+          未完成重排：
+          {rerankFallbackLabels[metadata.rerank_fallback_reason] ||
+            '重排服务暂不可用'}
+          。结果按融合排序显示，未按阈值过滤。
+        </p>
+      )}
+      {metadata.effective_strategy === 'rerank' && (
+        <p>
+          重排模型 {metadata.rerank_model} · 阈值 {metadata.rerank_min_score} ·
+          过滤 {metadata.rerank_dropped ?? 0} 条
+          {metadata.rerank_ms !== undefined
+            ? ` · 重排 ${metadata.rerank_ms.toFixed(1)} ms`
             : ''}
         </p>
       )}

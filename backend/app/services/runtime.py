@@ -16,6 +16,7 @@ from ..runtime_config import read_settings
 from ..repositories.settings import PrivateSettings
 from ..prompts import compose_prompt
 from .retrieval import RetrievalService
+from ..rerank import DashScopeReranker
 
 MAX_BACKUP = 100 * 1024 * 1024
 
@@ -70,12 +71,22 @@ def build_runtime(
         if runtime_settings is not None
         else dict(getattr(chat.provider, 'settings', None) or config)
     )
+    source = runtime_settings if runtime_settings is not None else config
+    reranker = DashScopeReranker(source)
+    try:
+        min_score = float(source.get('RERANK_MIN_SCORE') or 0)
+        candidates = int(source.get('RERANK_CANDIDATES') or 20)
+    except ValueError:
+        raise ValueError(
+            'RERANK_MIN_SCORE must be a number and RERANK_CANDIDATES an integer'
+        ) from None
     retrieval = RetrievalService(
         engine,
         provider_getter=lambda: chat.provider,
-        mode=(runtime_settings if runtime_settings is not None else config).get(
-            'RETRIEVAL_MODE', 'lexical'
-        ),
+        mode=source.get('RETRIEVAL_MODE', 'lexical'),
+        reranker_getter=lambda: reranker,
+        rerank_min_score=min_score,
+        rerank_candidates=candidates,
     )
     chat.retrieval = retrieval
     private_path = (
