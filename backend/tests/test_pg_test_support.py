@@ -108,7 +108,14 @@ def test_migrated_public_is_not_reused_or_changed(migrated_public):
             schema = connection.scalar(text('SELECT current_schema()'))
             schemas.append(schema)
             tables = set(inspect(connection).get_table_names(schema=schema))
-            assert tables == set(Base.metadata.tables) | {'alembic_version'}
+            # Checkpoint tables are Alembic-managed SDK tables, not ORM models.
+            assert tables == set(Base.metadata.tables) | {
+                'alembic_version',
+                'checkpoint_migrations',
+                'checkpoints',
+                'checkpoint_blobs',
+                'checkpoint_writes',
+            }
             assert connection.scalar(
                 text('SELECT version_num FROM alembic_version')
             ) == connection.scalar(text('SELECT version_num FROM public.alembic_version'))

@@ -12,6 +12,7 @@ from .experiments import ExperimentService
 from .ingestion import IngestionService
 from ..llm import LangChainProvider
 from ..jobs import JobService
+from ..nmm.workflow_service import NmmWorkflowService
 from ..runtime_config import read_settings
 from ..repositories.settings import PrivateSettings
 from ..prompts import compose_prompt
@@ -32,6 +33,7 @@ class Runtime:
     user_settings: PrivateSettings
     jobs: JobService
     retrieval: RetrievalService
+    nmm: NmmWorkflowService
 
 
 REASONING_LEVELS = ('none', 'minimal', 'low', 'medium', 'high', 'xhigh')
@@ -58,6 +60,9 @@ def build_runtime(
     settings_path=None,
     runtime_settings=None,
     credential_store=None,
+    nmm_vision_provider=None,
+    nmm_image_provider=None,
+    nmm_checkpoint_store=None,
 ):
     config = read_settings()
     root = Path(__file__).resolve().parents[3]
@@ -132,11 +137,21 @@ def build_runtime(
         raise ValueError('Private settings must be outside attachment storage')
     user_settings = PrivateSettings(private_path, env, credentials=credential_store)
     jobs = JobService(engine)
+    nmm = NmmWorkflowService(
+        engine,
+        storage,
+        jobs,
+        vision=nmm_vision_provider,
+        image_edit=nmm_image_provider,
+        checkpoint_store=nmm_checkpoint_store,
+    )
     experiments = ExperimentService(engine, chat.provider, chat.lock, settings=env, jobs=jobs)
     chat.system_prompt = experiments.system_prompt = compose_prompt(
         user_settings.data['custom_prompt']
     )
-    return Runtime(engine, storage, backup_limit, chat, experiments, user_settings, jobs, retrieval)
+    return Runtime(
+        engine, storage, backup_limit, chat, experiments, user_settings, jobs, retrieval, nmm
+    )
 
 
 @asynccontextmanager
@@ -158,6 +173,7 @@ async def application_lifespan(app):
             db.commit()
         state.jobs.recover()
         state.experiments.recover()
+        state.nmm.recover()
         async with state.chat.lifespan(app):
             try:
                 yield

@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 
 from .credentials import CredentialError
 
-from .api import attachments, backups, catalog, ingestion
+from .api import attachments, backups, catalog, ingestion, nmm
 from .api.errors import service_error_response
 from .api.jobs import install_jobs
 from .chat import install_chat
@@ -26,14 +26,26 @@ def create_app(
     settings_path=None,
     runtime_settings=None,
     credential_store=None,
+    nmm_vision_provider=None,
+    nmm_image_provider=None,
+    nmm_checkpoint_store=None,
 ) -> FastAPI:
     runtime = build_runtime(
-        database_url, storage_dir, provider, settings_path, runtime_settings, credential_store
+        database_url,
+        storage_dir,
+        provider,
+        settings_path,
+        runtime_settings,
+        credential_store,
+        nmm_vision_provider,
+        nmm_image_provider,
+        nmm_checkpoint_store,
     )
     app = FastAPI(title='模型制作知识库 API', version='0.4.0', lifespan=application_lifespan)
     app.state.configure_saved_provider = provider is None
     app.state.retrieval = runtime.retrieval
     app.state.search = SearchService(runtime.engine, runtime.retrieval)
+    app.state.nmm = runtime.nmm
     app.state.jobs = runtime.jobs
     app.state.engine = runtime.engine
     app.state.storage = runtime.storage
@@ -48,7 +60,13 @@ def create_app(
     install_chat(app, runtime.chat)
     install_evaluation(app, runtime.engine)
     install_jobs(app)
-    for router in (catalog.router, attachments.router, ingestion.router, backups.router):
+    for router in (
+        catalog.router,
+        attachments.router,
+        ingestion.router,
+        backups.router,
+        nmm.router,
+    ):
         app.include_router(router)
     return app
 

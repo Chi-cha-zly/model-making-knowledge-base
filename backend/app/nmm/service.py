@@ -1,10 +1,12 @@
 """Explicit NMM input ingestion; no model, graph, or background work runs here."""
 
 import hashlib
+from io import BytesIO
 from pathlib import Path
 from uuid import UUID
 
 from sqlalchemy.orm import Session
+from PIL import Image
 
 from app.services.errors import ServiceError
 from .models import NmmAsset
@@ -38,7 +40,12 @@ class NmmService:
             raise ValueError('参考图仅支持效果、配色或步骤用途，最多 12 张。')
         if sum(role != 'reference_steps' for role, _ in references) > 3:
             raise ValueError('效果与配色参考合计最多 3 张。')
-        source = normalize_image(original.data, original.content_type)
+        source = normalize_image(original.data, original.content_type, max_pixels=4_000_000)
+        if source.width * source.height > 4_000_000:
+            raise ValueError('NMM original exceeds the 4,000,000 pixel limit.')
+        with Image.open(BytesIO(source.data)) as decoded:
+            if decoded.mode == 'RGBA' and decoded.getchannel('A').getextrema() != (255, 255):
+                raise ValueError('NMM original must be opaque.')
         region = validate_mask(
             mask.data, mask.content_type, width=source.width, height=source.height
         )

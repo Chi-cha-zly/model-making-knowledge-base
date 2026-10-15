@@ -35,9 +35,19 @@ def copy_legacy_database(
     source_meta, target_meta = MetaData(), MetaData()
     source_meta.reflect(source)
     target_meta.reflect(target)
-    # SQLite predates NMM and has no defined NMM file/reference migration format.
+    # SQLite predates NMM and has no defined NMM/checkpoint migration format.
     unsupported = (set(source_meta.tables) - set(target_meta.tables) - {'alembic_version'}) | (
-        set(source_meta.tables) & {'nmm_projects', 'nmm_assets', 'nmm_plans', 'nmm_steps'}
+        set(source_meta.tables)
+        & {
+            'nmm_projects',
+            'nmm_assets',
+            'nmm_plans',
+            'nmm_steps',
+            'checkpoints',
+            'checkpoint_blobs',
+            'checkpoint_writes',
+            'checkpoint_migrations',
+        }
     )
     records = {}
     placed = []
@@ -86,7 +96,7 @@ def copy_legacy_database(
             # Emptiness applies to the entire target, including newer domains.
             # It needs no dependency ordering and must not skip non-source tables.
             for table in target_meta.tables.values():
-                if table.name == 'alembic_version':
+                if table.name in ('alembic_version', 'checkpoint_migrations'):
                     continue
                 if conn.execute(select(table).limit(1)).first():
                     raise ValueError('Target database must be empty')

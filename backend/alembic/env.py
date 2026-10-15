@@ -44,6 +44,14 @@ version_table_schema = config.attributes.get('version_table_schema')
 
 
 def include_object(object_, name, type_, reflected, compare_to):
+    # SDK-owned checkpoint schema is frozen in explicit migrations, not ORM models.
+    if (
+        type_ == 'table'
+        and reflected
+        and name
+        in {'checkpoints', 'checkpoint_blobs', 'checkpoint_writes', 'checkpoint_migrations'}
+    ):
+        return False
     # PostgreSQL-specific trigram indexes are maintained by migration SQL.
     return not (type_ == 'index' and reflected and name.endswith('_trgm'))
 
