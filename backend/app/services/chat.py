@@ -6,6 +6,7 @@ import hashlib
 import json
 from time import monotonic
 from ..agents.knowledge import (
+    AgentOptions,
     EvidenceCollector,
     build_main_agent,
     final_citations,
@@ -24,6 +25,7 @@ class ChatService:
         self.engine, self.provider, self.retrieval = engine, provider, retrieval
         # Agent mode: tool-calling agents decide when and what to retrieve.
         self.agent_mode = agent_mode
+        self.agent_options = AgentOptions()
         self.repository = ChatRepository(engine)
         self.lock = asyncio.Lock()
         self.tasks = {}
@@ -185,7 +187,12 @@ class ChatService:
         try:
             async with self.provider.agent_models() as (main, research):
                 agent = build_main_agent(
-                    main, research, self.retrieval, collector, self.system_prompt
+                    main,
+                    research,
+                    self.retrieval,
+                    collector,
+                    self.system_prompt,
+                    self.agent_options,
                 )
                 async for text in stream_answer(agent, history):
                     yield text

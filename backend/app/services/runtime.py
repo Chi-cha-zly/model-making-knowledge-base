@@ -16,6 +16,7 @@ from ..runtime_config import read_settings
 from ..repositories.settings import PrivateSettings
 from ..prompts import compose_prompt
 from .retrieval import RetrievalService
+from ..agents.knowledge import AgentOptions
 from ..rerank import DashScopeReranker
 
 MAX_BACKUP = 100 * 1024 * 1024
@@ -92,6 +93,16 @@ def build_runtime(
     if source.get('CHAT_MODE', 'rag') not in ('rag', 'agent'):
         raise ValueError('CHAT_MODE must be rag or agent')
     chat.agent_mode = source.get('CHAT_MODE', 'rag') == 'agent'
+    try:
+        searches = int(source.get('AGENT_MAX_SEARCHES') or 4)
+    except ValueError:
+        raise ValueError('AGENT_MAX_SEARCHES must be an integer') from None
+    if not 1 <= searches <= 8:
+        raise ValueError('AGENT_MAX_SEARCHES must be between 1 and 8')
+    chat.agent_options = AgentOptions(
+        max_searches=searches,
+        parallel_search=source.get('AGENT_PARALLEL_SEARCH', 'false').lower() == 'true',
+    )
     private_path = (
         Path(settings_path).resolve()
         if settings_path is not None

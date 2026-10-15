@@ -11,6 +11,7 @@ Design:
 
 import json
 import re
+from time import perf_counter
 from dataclasses import dataclass, field
 
 from langchain.agents import create_agent
@@ -24,7 +25,7 @@ from sqlalchemy.orm import Session
 from ..chat_context import bounded_evidence
 from ..repositories.retrieval import document_text
 from ..retrieval_types import RetrievalResult
-from .prompts import MAIN_AGENT_RULES, RESEARCH_PROMPT
+from .prompts import MAIN_AGENT_RULES, PARALLEL_SEARCH_RULE, RESEARCH_PROMPT
 
 MAIN_NAME = 'knowledge_agent'
 RESEARCH_NAME = 'research_agent'
@@ -32,6 +33,14 @@ MAX_SEARCHES = 4
 MAX_RESEARCH_CALLS = 3
 MAX_MAIN_MODEL_CALLS = 6
 CITATION = re.compile(r'\[(technique|product):(\d+)\]')
+
+
+@dataclass(frozen=True)
+class AgentOptions:
+    """Tunable cost/latency knobs, compared by scripts/evaluate_agent.py."""
+
+    max_searches: int = MAX_SEARCHES
+    parallel_search: bool = False
 
 
 class CoveredAspect(BaseModel):
@@ -83,10 +92,11 @@ def format_hits(hits):
     return '\n\n'.join(f'[{hit["key"]}] {hit["title"]}\n{hit["excerpt"][:600]}' for hit in hits)
 
 
-def build_research_agent(model, retrieval, collector):
+def build_research_agent(model, retrieval, collector, options=AgentOptions()):
     @tool
     async def search_library(query: str) -> str:
         """在模型制作知识库中检索资料。query 用简短具体的检索词。"""
+        started = perf_counter()
         result = await retrieval.search(query[:500], k=5)
         collector.add(result)
         collector.step(
@@ -94,18 +104,22 @@ def build_research_agent(model, retrieval, collector):
             query=query[:500],
             strategy=result.effective_strategy,
             keys=[hit['key'] for hit in result.hits],
+            ms=round((perf_counter() - started) * 1000),
         )
         return format_hits(result.hits)
 
     return create_agent(
         model,
         tools=[search_library],
-        system_prompt=RESEARCH_PROMPT,
+        system_prompt=RESEARCH_PROMPT.replace(
+            '最多检索 4 次', f'最多检索 {options.max_searches} 次'
+        )
+        + (PARALLEL_SEARCH_RULE if options.parallel_search else ''),
         # Tool-based structured output works on any tool-calling endpoint.
         response_format=ToolStrategy(EvidenceReport),
         middleware=[
-            ToolCallLimitMiddleware(tool_name='search_library', run_limit=MAX_SEARCHES),
-            ModelCallLimitMiddleware(run_limit=MAX_SEARCHES + 2, exit_behavior='end'),
+            ToolCallLimitMiddleware(tool_name='search_library', run_limit=options.max_searches),
+            ModelCallLimitMiddleware(run_limit=options.max_searches + 2, exit_behavior='end'),
         ],
         name=RESEARCH_NAME,
     )
@@ -134,8 +148,10 @@ def research_observation(report, collector):
     }
 
 
-def build_main_agent(model, research_model, retrieval, collector, system_prompt):
-    research_agent = build_research_agent(research_model, retrieval, collector)
+def build_main_agent(
+    model, research_model, retrieval, collector, system_prompt, options=AgentOptions()
+):
+    research_agent = build_research_agent(research_model, retrieval, collector, options)
 
     @tool
     async def research(task: str) -> str:
@@ -193,11 +209,6 @@ def build_main_agent(model, research_model, retrieval, collector, system_prompt)
     )
 
 
-def history_messages(turns):
-    """Repository turns are newest-first lists of {'role','content'}; oldest first here."""
-    return [message for turn in reversed(turns) for message in turn]
-
-
 def text_of(content):
     if isinstance(content, str):
         return content
@@ -211,10 +222,11 @@ def text_of(content):
 PREAMBLE_HOLD = 120
 
 
-async def stream_answer(agent, messages):
+async def stream_answer(agent, messages, config=None):
     """Yield answer text from the main agent's own model node only."""
     held, message_id, released, discarded = '', None, False, False
-    async for chunk, meta in agent.astream({'messages': messages}, stream_mode='messages'):
+    stream = agent.astream({'messages': messages}, config, stream_mode='messages')
+    async for chunk, meta in stream:
         if meta.get('lc_agent_name') != MAIN_NAME or meta.get('langgraph_node') != 'model':
             continue
         if not isinstance(chunk, (AIMessage, AIMessageChunk)):
