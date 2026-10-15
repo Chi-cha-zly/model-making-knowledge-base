@@ -50,7 +50,8 @@ def score_case(case, answer, citations, trace):
     """Pure per-case metrics; labelled keys are a lower bound of what is relevant."""
     cited = [f'{c["type"]}:{c["id"]}' for c in citations]
     relevant = set(case['relevant'])
-    researched = any(step['kind'] == 'research' for step in trace)
+    # Either retrieval route counts as consulting the library (quick_search logs a search).
+    researched = any(step['kind'] in ('research', 'search') for step in trace)
     result = {
         'researched': researched,
         'searches': sum(step['kind'] == 'search' for step in trace),

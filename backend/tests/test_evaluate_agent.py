@@ -95,3 +95,13 @@ def test_budget_stops_before_a_case_could_overspend():
         )
     )
     assert rows == [] and status == 'budget_stopped'
+
+
+def test_direct_search_counts_as_tool_use():
+    row = evaluate_agent.score_case(
+        answerable(),
+        '见 [technique:7]',
+        [{'type': 'technique', 'id': 7}],
+        [{'kind': 'search', 'source': 'main', 'keys': ['technique:7']}],
+    )
+    assert row['tool_ok'] and row['grounded']

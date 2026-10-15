@@ -119,9 +119,9 @@ def build_runtime(
     chat.agent_options = AgentOptions(
         max_searches=searches,
         parallel_search=source.get('AGENT_PARALLEL_SEARCH', 'false').lower() == 'true',
-        direct_search=source.get('AGENT_DIRECT_SEARCH', 'false').lower() == 'true',
+        direct_search=source.get('AGENT_DIRECT_SEARCH', 'true').lower() == 'true',
         research_reasoning=research_reasoning(source.get('AGENT_RESEARCH_REASONING', '')),
-        rule_report=source.get('AGENT_RULE_REPORT', 'false').lower() == 'true',
+        rule_report=source.get('AGENT_RULE_REPORT', 'true').lower() == 'true',
     )
     private_path = (
         Path(settings_path).resolve()
