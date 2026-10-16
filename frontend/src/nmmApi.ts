@@ -152,9 +152,16 @@ export type NmmPlan = {
   render_params: Record<string, number>
   created_at: string
 }
+export type NmmCandidateCheck = {
+  status: 'needs_review' | 'blocked'
+  reasons: string[]
+  metrics: Record<string, number>
+  version: string
+}
 export type NmmProject = NmmProjectSummary & {
   assets: NmmAsset[]
   candidate_ids: string[]
+  candidate_checks?: Record<string, NmmCandidateCheck>
   plan: NmmPlan | null
   steps: NmmStep[]
   analysis?: Record<string, unknown> | null
@@ -194,6 +201,7 @@ export type NmmRunInput = {
   request_id: string
   revision: number
   confirm_generation: boolean
+  quality_acknowledged?: boolean
   cost_authorization?: CostAuthorization | null
 }
 export type NmmConfirmInput = {
@@ -203,6 +211,7 @@ export type NmmConfirmInput = {
   candidate_id?: string
   params?: NmmParams
   confirm_generation?: boolean
+  quality_acknowledged?: boolean
   cost_authorization?: CostAuthorization | null
 }
 export type NmmJob = {

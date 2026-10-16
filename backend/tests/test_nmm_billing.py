@@ -329,6 +329,7 @@ def test_real_workflow_requires_grant_and_keeps_usage_through_confirmation(tmp_p
             request_id='select',
             revision=1,
             action='select',
+            quality_acknowledged=True,
             candidate_id=paused['candidate_ids'][0],
         )
         assert (await wait_job(service.jobs, job))['status'] == 'completed'
@@ -504,7 +505,7 @@ def test_cancelled_real_call_is_unknown_and_old_grant_cannot_restart(tmp_path):
         pending = service.detail(project['id'])['meta']['usage']['calls'][0]
         assert pending['status'] == 'requested'
         assert pending['usage']['model'] == 'vision'
-        assert pending['usage']['input_images'] == 2
+        assert pending['usage']['input_images'] == 3
         assert pending['usage']['elapsed_ms'] is pending['usage']['estimated_cost'] is None
         stopped = await service.stop(project['id'])
         assert stopped['status'] == 'stopped'
@@ -583,7 +584,12 @@ def test_failed_schema_calls_are_charged_and_bounded_by_plan_repair_limit(tmp_pa
         await wait_job(service.jobs, job)
         candidate = service.detail(project['id'])['candidate_ids'][0]
         job = await service.confirm(
-            project['id'], request_id='select', revision=1, action='select', candidate_id=candidate
+            project['id'],
+            request_id='select',
+            revision=1,
+            action='select',
+            quality_acknowledged=True,
+            candidate_id=candidate,
         )
         assert (await wait_job(service.jobs, job))['status'] == 'completed'
         done = service.detail(project['id'])

@@ -49,6 +49,7 @@ def completed(client):
             'request_id': 'select',
             'revision': 1,
             'action': 'select',
+            'quality_acknowledged': True,
             'candidate_id': item['candidate_ids'][0],
         },
     )

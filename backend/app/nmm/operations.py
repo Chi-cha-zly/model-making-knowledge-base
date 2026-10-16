@@ -15,6 +15,8 @@ from sqlalchemy.orm import Session
 from app.models import now
 from app.services.errors import ServiceError
 from .calls import invoke
+from .analysis_scope import analysis_images, scope_analysis
+from .candidate_quality import check_candidate
 from .provider_types import NmmProviderError
 from .models import NmmAsset
 from .prompts import analysis_prompt, generation_prompt, plan_prompt, review_prompt
@@ -127,6 +129,11 @@ class WorkflowOperations:
         key = f'{name}:{attempt}'
         with Session(self.service.engine) as db, db.begin():
             project = self.guard(db)
+            if name not in ('analyze', 'generate'):
+                selected = state.get('selected_candidate_id')
+                if not selected or str(project.selected_candidate_id) != selected:
+                    raise ServiceError(409, '候选选择与当前项目不一致。')
+                self.service._require_candidate_quality(db, project, selected)
             cached = project.execution.get('stages', {}).get(key)
             if cached:
                 if cached['status'] == 'completed':
@@ -155,18 +162,16 @@ class WorkflowOperations:
         inputs = self.inputs()
         prior_warnings = list(state.get('warnings', []))
         if name == 'analyze':
-            with (
-                Image.open(BytesIO(inputs['original'][0].data)) as original,
-                Image.open(BytesIO(inputs['mask'][0].data)) as mask,
-            ):
-                alpha = mask.convert('L').point(lambda value: 96 if value else 0)
-                overlay = Image.new('RGB', original.size, 'red')
-                annotated = png(Image.composite(overlay, original.convert('RGB'), alpha))
-            images = inputs['original'] + [ImageInput(annotated.data, annotated.content_type)]
+            images, scope, mask = analysis_images(inputs['original'][0], inputs['mask'][0])
             analysis = await invoke(
-                self, 'vision', key, images, analysis_prompt(state['params']), schema=AnalysisOutput
+                self,
+                'vision',
+                key,
+                images,
+                analysis_prompt(state['params'], scope),
+                schema=AnalysisOutput,
             )
-            analysis = AnalysisOutput.model_validate(analysis).model_dump()
+            analysis = scope_analysis(analysis, mask)
             return self.write(
                 key,
                 {
@@ -179,12 +184,14 @@ class WorkflowOperations:
             )
         if name == 'generate':
             references = inputs.get('reference_style', []) + inputs.get('reference_palette', [])
+            with Image.open(BytesIO(inputs['mask'][0].data)) as mask:
+                scoped_analysis = scope_analysis(state['analysis'], np.array(mask.convert('L')) > 0)
             outputs = await invoke(
                 self,
                 'image',
                 key,
                 inputs['original'],
-                generation_prompt(state['params'], state['analysis']),
+                generation_prompt(state['params'], scoped_analysis),
                 mask=inputs['mask'][0],
                 references=references,
             )
@@ -205,14 +212,28 @@ class WorkflowOperations:
                             255,
                         ):
                             raise ValueError('Candidate must be opaque')
-                        candidate = decoded.convert('RGB').resize(
-                            source.size, Image.Resampling.LANCZOS
-                        )
+                        if decoded.size != source.size:
+                            raise ValueError('Candidate must match original dimensions')
+                        candidate = decoded.convert('RGB')
                         image = Image.composite(candidate, source, region)
-                        images.append(('candidate', png(image), {'attempt': attempt}))
+                        quality = await asyncio.to_thread(
+                            check_candidate, np.array(source), np.array(image), np.array(region) > 0
+                        )
+                        images.append(
+                            (
+                                'candidate',
+                                png(image),
+                                {'attempt': attempt, 'quality_check': quality},
+                            )
+                        )
 
             def writer(db, project, repository, ids):
-                return {'candidate_ids': ids, 'attempt': attempt}
+                return {
+                    'candidate_ids': ids,
+                    'attempt': attempt,
+                    'analysis': scoped_analysis,
+                    'warnings': list(dict.fromkeys(prior_warnings + scoped_analysis['warnings'])),
+                }
 
             return self.write(key, {}, images=images, writer=writer)
         if name == 'palette':

@@ -205,6 +205,7 @@ def test_real_workflow_pause_sse_select_steps_and_files(offline):
             'request_id': 'select',
             'revision': 1,
             'action': 'select',
+            'quality_acknowledged': True,
             'candidate_id': candidate['id'],
         },
     )
@@ -388,6 +389,7 @@ def test_confirm_rejects_cross_project_candidate_and_stale_revision(offline):
         'request_id': 'select',
         'revision': 1,
         'action': 'select',
+        'quality_acknowledged': True,
         'candidate_id': candidate['id'],
     }
     assert client.post(f'{BASE}/{second["id"]}/confirm', json=data).status_code in (409, 422)

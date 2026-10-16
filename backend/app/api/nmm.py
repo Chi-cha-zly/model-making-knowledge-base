@@ -44,6 +44,7 @@ class RunInput(BaseModel):
     request_id: RequestId
     revision: StrictInt = Field(ge=1)
     confirm_generation: StrictBool
+    quality_acknowledged: StrictBool = False
     cost_authorization: CostAuthorization | None = None
 
 
@@ -55,6 +56,7 @@ class ConfirmInput(BaseModel):
     candidate_id: UUID | None = None
     params: NmmParams | None = None
     confirm_generation: StrictBool = False
+    quality_acknowledged: StrictBool = False
     cost_authorization: CostAuthorization | None = None
 
 

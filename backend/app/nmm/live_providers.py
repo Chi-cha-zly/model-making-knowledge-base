@@ -20,6 +20,7 @@ from PIL import Image
 from pydantic import ValidationError
 
 from .image_processing import (
+    EDIT_PREPROCESS_VERSION,
     MAX_BODY_BYTES,
     MAX_OUTPUT_BYTES,
     MAX_OUTPUT_PIXELS,
@@ -272,7 +273,11 @@ class OpenAIImageEditProvider(_Provider):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.public_config.update(
-            quality='medium', output_format='png', background='opaque', max_references=3
+            quality='medium',
+            output_format='png',
+            background='opaque',
+            max_references=3,
+            image_preprocess_version=EDIT_PREPROCESS_VERSION,
         )
         self.configuration_id = configuration_id(self.public_config, self._api_key)
 
@@ -288,7 +293,7 @@ class OpenAIImageEditProvider(_Provider):
             )
             if len(assembled) > 32000:
                 raise ValueError('Prompt exceeds endpoint limit')
-            images, alpha_mask, size = prepare_edit(image, mask, references)
+            images, alpha_mask, transform = prepare_edit(image, mask, references)
             files = [
                 ('image[]', (f'image-{index}.png', raw, 'image/png'))
                 for index, raw in enumerate(images)
@@ -303,7 +308,7 @@ class OpenAIImageEditProvider(_Provider):
                 'model': self.model,
                 'prompt': assembled,
                 'n': '1',
-                'size': size,
+                'size': transform.api_size,
                 'quality': 'medium',
                 'background': 'opaque',
                 'output_format': 'png',
@@ -338,7 +343,8 @@ class OpenAIImageEditProvider(_Provider):
             with Image.open(BytesIO(normalized.data)) as decoded:
                 if decoded.getchannel('A').getextrema() != (255, 255):
                     raise ValueError('Transparent output')
-            return ProviderResult([normalized.data], replace(usage, output_images=1))
+                restored = encode_png(transform.restore(decoded).convert('RGB'))
+            return ProviderResult([restored], replace(usage, output_images=1))
         except (KeyError, ValueError, TypeError, binascii.Error):
             raise self.error('invalid_output', usage) from None
 

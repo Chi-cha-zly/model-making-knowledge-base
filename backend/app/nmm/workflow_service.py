@@ -1,6 +1,11 @@
 """Project/revision-bound jobs around a persistent, explicitly resumed graph."""
 
 import asyncio
+from collections import OrderedDict
+from io import BytesIO
+
+import numpy as np
+from PIL import Image
 from copy import deepcopy
 from hashlib import sha256
 from uuid import UUID, uuid4
@@ -14,6 +19,7 @@ from app.job_models import Job
 from app.models import now
 from app.services.errors import ServiceError
 from .billing import NmmBilling
+from .candidate_quality import QUALITY_VERSION, check_candidate, unavailable_check
 from .calls import error_record
 from .provider_types import NmmProviderError
 from .prompts import PROMPT_VERSION
@@ -69,6 +75,7 @@ class NmmWorkflowService:
         )
         self.max_generations = max_generations
         self.lock = asyncio.Lock()
+        self._quality_cache = OrderedDict()
         providers = [self.vision, self.image_edit]
         configuration = {
             'configuration_id': digest(
@@ -174,6 +181,14 @@ class NmmWorkflowService:
             result['thumbnail_asset_id'] = self._thumbnail(assets)
             result['assets'] = [encode(row, exclude=('storage_name',)) for row in assets]
             result['candidate_ids'] = [str(row.id) for row in assets if row.role == 'candidate']
+            # Default one output per attempt, at most six attempts. Bound legacy
+            # multi-output data too; overflow candidates remain unselectable.
+            result['candidate_checks'] = {
+                str(row.id): self._candidate_check(db, project, row.id)
+                if index < 24
+                else unavailable_check()
+                for index, row in enumerate(a for a in assets if a.role == 'candidate')
+            }
             plan = db.scalar(
                 select(NmmPlan)
                 .where(NmmPlan.project_id == project.id, NmmPlan.revision == project.revision)
@@ -191,6 +206,64 @@ class NmmWorkflowService:
                 else []
             )
             return result
+
+    def _candidate_check(self, db, project, candidate_id):
+        """Recompute legacy/stale metadata read-only; cache only verified content IDs."""
+        try:
+            candidate = NmmRepository(db)._asset(project, UUID(str(candidate_id)), 'candidate')
+            inputs = list(
+                db.scalars(
+                    select(NmmAsset).where(
+                        NmmAsset.project_id == project.id,
+                        NmmAsset.revision == project.revision,
+                        NmmAsset.role.in_(('original', 'mask')),
+                    )
+                )
+            )
+            if len(inputs) != 2 or {a.role for a in inputs} != {'original', 'mask'}:
+                return unavailable_check()
+            by_role = {a.role: a for a in inputs}
+            rows = [by_role['original'], candidate, by_role['mask']]
+            # read_asset checks bytes against sha256 even on a cache hit.
+            values = [self.inputs.read_asset(a.id)[0] for a in rows]
+            key = (QUALITY_VERSION, *(a.sha256 for a in rows))
+            if key in self._quality_cache:
+                self._quality_cache.move_to_end(key)
+                return deepcopy(self._quality_cache[key])
+            arrays = []
+            for raw in values:
+                with Image.open(BytesIO(raw)) as image:
+                    if (
+                        not 0 < image.width * image.height <= 4_000_000
+                        or getattr(image, 'n_frames', 1) != 1
+                    ):
+                        return unavailable_check()
+                    rgba = image.convert('RGBA')
+                    if rgba.getchannel('A').getextrema() != (255, 255):
+                        return unavailable_check()
+                    arrays.append(np.array(rgba.convert('RGB')))
+            mask = arrays[2]
+            if not np.all((mask == 0).all(axis=2) | (mask == 255).all(axis=2)):
+                return unavailable_check()
+            result = check_candidate(arrays[0], arrays[1], (mask == 255).all(axis=2))
+            self._quality_cache[key] = deepcopy(result)
+            while len(self._quality_cache) > 64:
+                self._quality_cache.popitem(last=False)
+            return result
+        except (OSError, ValueError, TypeError, ServiceError):
+            return unavailable_check()
+
+    def _require_candidate_quality(self, db, project, candidate_id, acknowledged=True):
+        check = self._candidate_check(db, project, candidate_id)
+        if check['status'] != 'needs_review':
+            recovery = (
+                '请检查对比结果，重新估算并明确重新生成。'
+                if project.status == 'awaiting_confirmation'
+                else '当前已选候选不能继续；请新建项目后重新估算生成。'
+            )
+            raise ServiceError(409, '候选结构检查未通过，不能采用或继续教学；' + recovery)
+        if acknowledged is not True:
+            raise ServiceError(422, '请先对照原图，明确确认零件、轮廓和浮雕未被改动。')
 
     def _recovery_state(self, project):
         resume_selected = (
@@ -285,7 +358,14 @@ class NmmWorkflowService:
             raise ServiceError(409, '项目生成次数已达上限。')
 
     async def run(
-        self, project_id, *, request_id, revision, confirm_generation, cost_authorization=None
+        self,
+        project_id,
+        *,
+        request_id,
+        revision,
+        confirm_generation,
+        cost_authorization=None,
+        quality_acknowledged=False,
     ):
         async with self.lock:
             parameters = {
@@ -294,6 +374,7 @@ class NmmWorkflowService:
                 'project_id': str(project_id),
                 'revision': revision,
                 'confirm_generation': confirm_generation,
+                'quality_acknowledged': quality_acknowledged,
             }
             key, existing = self._request(project_id, request_id, parameters)
             with Session(self.engine) as db:
@@ -307,6 +388,10 @@ class NmmWorkflowService:
                 ):
                     raise ServiceError(409, '项目不能重复启动；等待确认的项目请提交确认。')
                 resume_selected, generated, analyzed = self._recovery_state(project)
+                if resume_selected:
+                    self._require_candidate_quality(
+                        db, project, resume_selected, quality_acknowledged
+                    )
                 if analyzed and not resume_selected:
                     self._generation_allowed(project, confirm_generation)
                 if resume_selected or ((generated or analyzed) and project.workflow_thread_id):
@@ -342,6 +427,7 @@ class NmmWorkflowService:
         params=None,
         confirm_generation=False,
         cost_authorization=None,
+        quality_acknowledged=False,
     ):
         async with self.lock:
             parsed = NmmParams.model_validate(params).model_dump() if params is not None else None
@@ -354,6 +440,7 @@ class NmmWorkflowService:
                 'candidate_id': str(candidate_id) if candidate_id is not None else None,
                 'params': parsed,
                 'confirm_generation': confirm_generation,
+                'quality_acknowledged': quality_acknowledged,
             }
             key, existing = self._request(project_id, request_id, parameters)
             with Session(self.engine) as db:
@@ -377,6 +464,7 @@ class NmmWorkflowService:
                         NmmRepository(db)._asset(project, candidate_id, 'candidate')
                     except (ValueError, TypeError):
                         raise ServiceError(409, '候选不属于当前项目版本。') from None
+                    self._require_candidate_quality(db, project, candidate_id, quality_acknowledged)
                     selected = str(candidate_id)
                 elif action == 'regenerate':
                     self._generation_allowed(project, confirm_generation)
@@ -517,6 +605,12 @@ class NmmWorkflowService:
 
         operations = WorkflowOperations(self, project_id, revision, context.id, thread)
         try:
+            # A resumed graph can finish directly from a checkpoint; check the
+            # persisted selection even when no node is going to run.
+            with Session(self.engine) as db:
+                project = self._guard(db, project_id, revision, context.id, thread)
+                if project.selected_candidate_id is not None:
+                    self._require_candidate_quality(db, project, project.selected_candidate_id)
             async with self.checkpoint_store.open() as saver:
                 graph = build_workflow(operations.stage, saver)
                 if initial is None:

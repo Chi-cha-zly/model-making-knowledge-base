@@ -1,8 +1,9 @@
-"""Bounded structured offline workflow outputs; no provider can alter geometry."""
+"""Bounded structured workflow outputs with optional visible-surface grounding."""
 
 from typing import Literal
+import math
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class Surface(BaseModel):
@@ -11,6 +12,34 @@ class Surface(BaseModel):
     shape: Literal['flat', 'convex', 'concave', 'cylindrical', 'edge', 'mixed']
     position: str = Field(max_length=2000)
     notes: str = Field(max_length=2000)
+    bbox: list[float] | None = Field(default=None, min_length=4, max_length=4)
+    confidence: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    reflection_hint: str | None = Field(default=None, max_length=2000)
+
+    @field_validator('bbox', mode='before')
+    @classmethod
+    def valid_bbox(cls, value):
+        if value is None:
+            return None
+        if (
+            not isinstance(value, (list, tuple))
+            or len(value) != 4
+            or any(
+                type(v) not in (int, float) or not math.isfinite(v) or not 0 <= v <= 1
+                for v in value
+            )
+        ):
+            return None
+        return list(value) if value[0] < value[2] and value[1] < value[3] else None
+
+    @field_validator('confidence', mode='before')
+    @classmethod
+    def valid_confidence(cls, value):
+        return (
+            value
+            if type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 1
+            else None
+        )
 
 
 class LightAssessment(BaseModel):

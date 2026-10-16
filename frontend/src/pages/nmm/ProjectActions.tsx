@@ -11,6 +11,7 @@ import {
   type NmmRunInput,
 } from '../../nmmApi'
 import CostDialog from './CostDialog'
+import CandidateComparison from './CandidateComparison'
 import NmmDialog from './NmmDialog'
 import ParamsForm, { validParams } from './ParamsForm'
 type Intent = {
@@ -36,7 +37,11 @@ export default function ProjectActions({
     [pending, setPending] = useState<Operation | null>(null),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
-    [zoom, setZoom] = useState<string | null>(null)
+    [zoom, setZoom] = useState<string | null>(null),
+    [acknowledgement, setAcknowledgement] = useState<{
+      candidate: string
+      scope: string
+    } | null>(null)
   const gate = useRef(false),
     mounted = useRef(true),
     revision = useRef(project.revision),
@@ -56,13 +61,50 @@ export default function ProjectActions({
     setParams(project.params)
     serial.current++
   }, [project.revision, project.params])
+  const candidateScope = JSON.stringify([
+    project.id,
+    project.revision,
+    project.candidate_ids,
+    project.selected_candidate_id,
+  ])
+  const original = project.assets.find((asset) => asset.role === 'original')
+  useEffect(() => {
+    setAcknowledgement(null)
+    setZoom(null)
+  }, [candidateScope])
   const changed = JSON.stringify(params) !== JSON.stringify(project.params)
   const active =
     ['generating', 'planning', 'rendering'].includes(project.status) ||
     project.active_job_id !== null
   const disabled = busy || !!pending || !!quote || active
+  function acknowledged(id: string) {
+    return (
+      !!original &&
+      project.candidate_checks?.[id]?.status === 'needs_review' &&
+      acknowledgement?.candidate === id &&
+      acknowledgement.scope === candidateScope &&
+      !changed
+    )
+  }
+  const quotedCandidate =
+    quote?.intent.action === 'select'
+      ? quote.intent.candidate
+      : quote?.intent.action === 'run'
+        ? project.selected_candidate_id
+        : null
+  const invalidReviewQuote = !!quotedCandidate && !acknowledged(quotedCandidate)
+  useEffect(() => {
+    if (invalidReviewQuote) setQuote(null)
+  }, [invalidReviewQuote])
   async function estimate(intent: Intent) {
     if (gate.current || disabled) return
+    const candidate =
+      intent.action === 'select'
+        ? intent.candidate
+        : intent.action === 'run'
+          ? project.selected_candidate_id
+          : null
+    if (candidate && !acknowledged(candidate)) return
     gate.current = true
     setBusy(true)
     setError('')
@@ -133,6 +175,13 @@ export default function ProjectActions({
     if (!quote || quote.estimate.revision !== project.revision || gate.current)
       return
     const { intent } = quote
+    const candidate =
+      intent.action === 'select'
+        ? intent.candidate
+        : intent.action === 'run'
+          ? project.selected_candidate_id
+          : null
+    if (candidate && !acknowledged(candidate)) return
     const base = {
       request_id: crypto.randomUUID(),
       revision: project.revision,
@@ -145,6 +194,7 @@ export default function ProjectActions({
             body: {
               ...base,
               confirm_generation: quote.estimate.generation_required ?? true,
+              ...(candidate ? { quality_acknowledged: true } : {}),
             },
           }
         : {
@@ -153,6 +203,9 @@ export default function ProjectActions({
               ...base,
               action: intent.action,
               confirm_generation: intent.action === 'regenerate',
+              ...(intent.action === 'select'
+                ? { quality_acknowledged: true }
+                : {}),
               ...(intent.candidate ? { candidate_id: intent.candidate } : {}),
               ...(intent.params ? { params: intent.params } : {}),
             },
@@ -160,6 +213,80 @@ export default function ProjectActions({
     setQuote(null)
     setPending(operation)
     void submit(operation)
+  }
+  function candidateCard(id: string, index: number, selectable: boolean) {
+    const check = project.candidate_checks?.[id]
+    const reviewable = check?.status === 'needs_review' && !!original
+    return (
+      <article
+        key={id}
+        className="nmm-candidate-card"
+        aria-label={`候选 ${index + 1} 结构检查`}
+      >
+        <button
+          type="button"
+          aria-label={`对照候选 ${index + 1}`}
+          onClick={() => {
+            if (acknowledgement?.candidate !== id) setAcknowledgement(null)
+            setZoom(id)
+          }}
+        >
+          <img src={assetUrl(id)} alt={`候选效果 ${index + 1}`} />
+          <span>对照原图与候选 {index + 1}</span>
+        </button>
+        <p
+          className={check?.status === 'blocked' ? 'nmm-error' : 'nmm-warning'}
+        >
+          {!check || !['needs_review', 'blocked'].includes(check.status)
+            ? '尚未完成结构检查，暂不能选择。请刷新项目；旧版服务需更新后再检查。'
+            : check.status === 'blocked'
+              ? `局部结构检查发现明显风险，已阻止采用。此检查是启发式判断。${selectable ? '可调整参数后重新生成。' : ''}`
+              : '仍需人工对照。自动检查不能保证零件、轮廓和浮雕完整。'}
+        </p>
+        {!selectable && check?.status === 'blocked' && (
+          <p className="nmm-warning">
+            此候选不能继续；请返回项目列表新建项目并重新生成。
+          </p>
+        )}
+        {!!check?.reasons.length && (
+          <ul className="nmm-candidate-reasons">
+            {check.reasons.map((reason, i) => (
+              <li key={i}>{reason}</li>
+            ))}
+          </ul>
+        )}
+        {!original && (
+          <p className="nmm-warning">
+            原图暂不可用，无法进行结构对照。请刷新项目。
+          </p>
+        )}
+        {reviewable && (
+          <label className="nmm-check">
+            <input
+              type="checkbox"
+              checked={acknowledged(id)}
+              disabled={disabled || changed}
+              onChange={(event) =>
+                setAcknowledgement(
+                  event.target.checked
+                    ? { candidate: id, scope: candidateScope }
+                    : null,
+                )
+              }
+            />
+            我已对照原图，确认零件、轮廓和浮雕没有被改动
+          </label>
+        )}
+        {selectable && (
+          <button
+            disabled={disabled || !acknowledged(id)}
+            onClick={() => void estimate({ action: 'select', candidate: id })}
+          >
+            选择候选 {index + 1}
+          </button>
+        )}
+      </article>
+    )
   }
   const canRun = ['draft', 'failed', 'stopped'].includes(project.status)
   return (
@@ -177,10 +304,28 @@ export default function ProjectActions({
           模型尚未配置。项目已保存在本地；配置独立的图像和视觉服务后才能生成。
         </p>
       )}
+      {canRun && project.selected_candidate_id && (
+        <>
+          <h2>继续前检查已选候选</h2>
+          {candidateCard(
+            project.selected_candidate_id,
+            Math.max(
+              0,
+              project.candidate_ids.indexOf(project.selected_candidate_id),
+            ),
+            false,
+          )}
+        </>
+      )}
       {canRun && (
         <button
           className="primary-button"
-          disabled={disabled || project.provider_mode === 'unconfigured'}
+          disabled={
+            disabled ||
+            project.provider_mode === 'unconfigured' ||
+            (!!project.selected_candidate_id &&
+              !acknowledged(project.selected_candidate_id))
+          }
           onClick={() => void estimate({ action: 'run' })}
         >
           {busy
@@ -193,32 +338,19 @@ export default function ProjectActions({
       {project.status === 'awaiting_confirmation' && (
         <>
           <h2>选择候选效果</h2>
-          <p>选择后继续生成教学步骤；不满意时可修改参数并重新估算。</p>
+          <p>
+            先对照原图检查结构，再选择候选继续生成教学步骤。不满意时可修改参数并重新估算。
+          </p>
           <div className="nmm-candidates">
-            {project.candidate_ids.map((id, index) => (
-              <article key={id}>
-                <button
-                  type="button"
-                  aria-label={`放大候选 ${index + 1}`}
-                  onClick={() => setZoom(id)}
-                >
-                  <img src={assetUrl(id)} alt={`候选效果 ${index + 1}`} />
-                </button>
-                <button
-                  disabled={disabled || changed}
-                  onClick={() =>
-                    void estimate({ action: 'select', candidate: id })
-                  }
-                >
-                  选择候选 {index + 1}
-                </button>
-              </article>
-            ))}
+            {project.candidate_ids.map((id, index) =>
+              candidateCard(id, index, true),
+            )}
           </div>
           <ParamsForm
             value={params}
             onChange={(value) => {
               setParams(value)
+              setAcknowledgement(null)
               setQuote(null)
             }}
             disabled={disabled}
@@ -252,11 +384,15 @@ export default function ProjectActions({
         </>
       )}
       {zoom && (
-        <NmmDialog title="候选效果预览" onClose={() => setZoom(null)}>
-          <img src={assetUrl(zoom)} alt="候选效果放大预览" />
+        <NmmDialog title="候选结构对照" onClose={() => setZoom(null)}>
+          <CandidateComparison
+            key={`${candidateScope}:${zoom}`}
+            original={original}
+            candidateId={zoom}
+          />
         </NmmDialog>
       )}
-      {quote && (
+      {quote && !invalidReviewQuote && (
         <CostDialog
           estimate={quote.estimate}
           selection={quote.intent.action === 'select'}

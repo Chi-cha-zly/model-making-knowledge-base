@@ -56,10 +56,19 @@ def prompt(task='analysis', notes='user-private-note'):
     )
 
 
-def image_response(**kwargs):
+def image_response(*, raw=None, **kwargs):
     import base64
 
-    return {'data': [{'b64_json': base64.b64encode(make_png()).decode()}], **kwargs}
+    return {
+        'data': [
+            {
+                'b64_json': base64.b64encode(
+                    raw if raw is not None else make_png(size=(1024, 1024))
+                ).decode()
+            }
+        ],
+        **kwargs,
+    }
 
 
 def vision_response(content='{"summary":"valid"}', **kwargs):
@@ -81,7 +90,6 @@ def run_image(handler, **kwargs):
 
 
 def test_image_multipart_source_first_alpha_resize_no_fidelity_and_usage():
-    import base64
     from email import policy
     from email.parser import BytesParser
     from io import BytesIO
@@ -123,9 +131,11 @@ def test_image_multipart_source_first_alpha_resize_no_fidelity_and_usage():
             Image.open(BytesIO(image_parts[1])) as second,
             Image.open(BytesIO(values['mask'])) as alpha,
         ):
-            assert first.size == alpha.size == (1536, 768)
+            assert first.size == alpha.size == (1536, 1024)
             assert second.getpixel((0, 0))[:3] == (0, 255, 0)
-            assert alpha.getpixel((0, 0))[3] == 0 and alpha.getpixel((1535, 0))[3] == 255
+            assert alpha.getpixel((0, 128))[3] == 0
+            assert alpha.getpixel((1535, 128))[3] == 255
+            assert alpha.getpixel((0, 0))[3] == alpha.getpixel((0, 1023))[3] == 255
             assert set(alpha.getchannel('A').get_flattened_data()) == {0, 255}
         usage = {
             'input_tokens': 30,
@@ -134,7 +144,9 @@ def test_image_multipart_source_first_alpha_resize_no_fidelity_and_usage():
             'input_tokens_details': {'text_tokens': 10, 'image_tokens': 20},
         }
         return httpx.Response(
-            200, json=image_response(usage=usage), headers={'x-request-id': 'req-safe'}
+            200,
+            json=image_response(raw=image_parts[0], usage=usage),
+            headers={'x-request-id': 'req-safe'},
         )
 
     _, provider = build_nmm_providers(settings(), transport=httpx.MockTransport(handler))
@@ -147,7 +159,9 @@ def test_image_multipart_source_first_alpha_resize_no_fidelity_and_usage():
     assert result.usage.request_id == 'req-safe' and result.usage.estimated_cost == pytest.approx(
         (10 * 5 + 20 * 8 + 40 * 30) / 1e6
     )
-    assert base64.b64encode(result.value[0])
+    with Image.open(BytesIO(result.value[0])) as restored:
+        assert restored.size == (1600, 800)
+        assert restored.getpixel((0, 0))[:3] == (80, 90, 100)
 
 
 def test_vision_multi_image_json_mode_schema_and_user_notes_isolation():
@@ -647,9 +661,17 @@ def test_workflow_error_summary_keeps_safe_timeout_diagnostics(monkeypatch):
     async def open_store():
         yield None
 
-    project = SimpleNamespace(active_job_id=7, meta={})
+    project = SimpleNamespace(
+        active_job_id=7,
+        revision=1,
+        workflow_thread_id='thread',
+        status='generating',
+        selected_candidate_id=None,
+        meta={},
+    )
     session = MagicMock()
     session.__enter__.return_value = session
+    session.get.return_value = project
     session.scalar.return_value = project
     monkeypatch.setattr(workflow_service, 'Session', lambda *args: session)
     monkeypatch.setattr(
@@ -693,3 +715,97 @@ def test_capability_upload_budget_preserves_other_timeout_limits(capability, wri
     assert provider.timeout_seconds == 240
     asyncio.run(provider.request('/test', 1, content=b'{}'))
     assert captured == [{'connect': 15, 'write': write_seconds, 'read': 240, 'pool': 15}]
+
+
+@pytest.mark.parametrize('size', [(16, 16), (1536, 1024), (1024, 1536)])
+def test_wrong_returned_canvas_is_rejected_without_resizing_or_retry(size):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json=image_response(raw=make_png(size=size)))
+
+    with pytest.raises(NmmProviderError) as caught:
+        run_image(handler)
+    assert caught.value.code == 'invalid_output'
+    assert caught.value.usage.output_images == 0
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    'size,canvas,content_box',
+    [
+        ((1536, 768), (1536, 1024), (0, 128, 1536, 896)),
+        ((768, 1536), (1024, 1536), (128, 0, 896, 1536)),
+        ((1024, 1024), (1024, 1024), (0, 0, 1024, 1024)),
+        ((16, 10), (1536, 1024), (760, 507, 776, 517)),
+        ((1, 1), (1024, 1024), (511, 511, 512, 512)),
+    ],
+)
+def test_identity_canvas_roundtrip_retains_original_coordinates(size, canvas, content_box):
+    from email import policy
+    from email.parser import BytesParser
+    from io import BytesIO
+    import numpy as np
+    from PIL import Image
+    from app.nmm.providers import ImageInput
+
+    source = Image.new('RGB', size, (30, 40, 50))
+    source.paste((210, 110, 10), (0, 0, max(1, size[0] // 3), size[1]))
+    output = BytesIO()
+    source.save(output, 'PNG')
+    original = ImageInput(output.getvalue(), 'image/png')
+    mask = make_inputs(size)['mask']
+
+    def handler(request):
+        message = BytesParser(policy=policy.default).parsebytes(
+            ('Content-Type: ' + request.headers['content-type'] + '\r\n\r\n').encode()
+            + request.read()
+        )
+        values = {
+            part.get_param('name', header='content-disposition'): part.get_payload(decode=True)
+            for part in message.iter_parts()
+        }
+        assert values['size'].decode() == f'{canvas[0]}x{canvas[1]}'
+        with (
+            Image.open(BytesIO(values['image[]'])) as sent,
+            Image.open(BytesIO(values['mask'])) as alpha,
+        ):
+            assert sent.size == alpha.size == canvas
+            assert alpha.getchannel('A').point(lambda value: 255 - value).getbbox() == content_box
+            np.testing.assert_array_equal(np.asarray(sent.crop(content_box)), np.asarray(source))
+        # Identity service response uses the actual input canvas, not the original size.
+        return httpx.Response(200, json=image_response(raw=values['image[]']))
+
+    _, provider = build_nmm_providers(settings(), transport=httpx.MockTransport(handler))
+    result = asyncio.run(provider.edit(original, mask, [], prompt('generate'), 1))
+    with Image.open(BytesIO(result.value[0])) as restored:
+        assert restored.size == size
+        np.testing.assert_array_equal(np.asarray(restored.convert('RGB')), np.asarray(source))
+
+
+def test_preprocessing_protocol_change_invalidates_old_configuration_quote():
+    from app.nmm.provider_config import configuration_id
+
+    _, image = build_nmm_providers(settings())
+    legacy_config = {
+        'provider': 'openai',
+        'model': settings()['IMAGE_MODEL'],
+        'base_url': settings()['IMAGE_BASE_URL'],
+        'quality': 'medium',
+        'output_format': 'png',
+        'background': 'opaque',
+        'max_references': 3,
+    }
+    assert image.configuration_id != configuration_id(legacy_config, settings()['IMAGE_API_KEY'])
+
+
+def test_transparent_output_canvas_is_rejected_before_inverse_mapping():
+    from io import BytesIO
+    from PIL import Image
+
+    stream = BytesIO()
+    Image.new('RGBA', (1024, 1024), (10, 20, 30, 100)).save(stream, 'PNG')
+    with pytest.raises(NmmProviderError) as caught:
+        run_image(lambda request: httpx.Response(200, json=image_response(raw=stream.getvalue())))
+    assert caught.value.code == 'invalid_output'

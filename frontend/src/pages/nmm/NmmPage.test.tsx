@@ -255,12 +255,24 @@ it('binds changed candidate parameters to a fresh proposal and regenerate operat
 })
 it('requires confirmation for choosing a candidate, with no automatic selection', async () => {
   vi.mocked(nmmApi.detail).mockResolvedValue(
-    project({ status: 'awaiting_confirmation', candidate_ids: ['c1'] }),
+    project({
+      status: 'awaiting_confirmation',
+      candidate_ids: ['c1'],
+      candidate_checks: {
+        c1: { status: 'needs_review', reasons: [], metrics: {}, version: 'v1' },
+      },
+      assets: [
+        { id: 'original', role: 'original', width: 100, height: 100 },
+      ] as NmmProject['assets'],
+    }),
   )
   mount()
   await userEvent.click(
-    await screen.findByRole('button', { name: '选择候选 1' }),
+    await screen.findByRole('checkbox', {
+      name: '我已对照原图，确认零件、轮廓和浮雕没有被改动',
+    }),
   )
+  await userEvent.click(screen.getByRole('button', { name: '选择候选 1' }))
   expect(nmmApi.confirm).not.toHaveBeenCalled()
   expect(
     await screen.findByText(/后续教学分析仍可能产生视觉调用费用/),
@@ -273,6 +285,7 @@ it('requires confirmation for choosing a candidate, with no automatic selection'
         action: 'select',
         candidate_id: 'c1',
         confirm_generation: false,
+        quality_acknowledged: true,
       }),
     ),
   )
@@ -400,6 +413,12 @@ it('keeps selection available at the image cap and defaults to zero new images',
       status: 'awaiting_confirmation',
       generation_count: 6,
       candidate_ids: ['c1'],
+      candidate_checks: {
+        c1: { status: 'needs_review', reasons: [], metrics: {}, version: 'v1' },
+      },
+      assets: [
+        { id: 'original', role: 'original', width: 1200, height: 800 },
+      ] as NmmProject['assets'],
     }),
   )
   vi.mocked(nmmApi.estimate).mockResolvedValue({
@@ -410,8 +429,11 @@ it('keeps selection available at the image cap and defaults to zero new images',
   })
   mount()
   await userEvent.click(
-    await screen.findByRole('button', { name: '选择候选 1' }),
+    await screen.findByRole('checkbox', {
+      name: '我已对照原图，确认零件、轮廓和浮雕没有被改动',
+    }),
   )
+  await userEvent.click(screen.getByRole('button', { name: '选择候选 1' }))
   expect(await screen.findByLabelText('本次图片调用上限')).toHaveValue(0)
   expect(screen.getByLabelText('本次视觉调用上限')).toHaveValue(2)
   await approve()
@@ -427,17 +449,23 @@ it('keeps selection available at the image cap and defaults to zero new images',
     ),
   )
 })
-it('can enlarge each candidate and return keyboard focus without selecting it', async () => {
+it('can compare each candidate and return keyboard focus without selecting it', async () => {
   vi.mocked(nmmApi.detail).mockResolvedValue(
-    project({ status: 'awaiting_confirmation', candidate_ids: ['c1', 'c2'] }),
+    project({
+      status: 'awaiting_confirmation',
+      candidate_ids: ['c1', 'c2'],
+      assets: [
+        { id: 'original', role: 'original', width: 1200, height: 800 },
+      ] as NmmProject['assets'],
+    }),
   )
   mount()
-  const button = await screen.findByRole('button', { name: '放大候选 2' })
+  const button = await screen.findByRole('button', { name: '对照候选 2' })
   await userEvent.click(button)
   expect(
-    screen.getByRole('dialog', { name: '候选效果预览' }),
+    screen.getByRole('dialog', { name: '候选结构对照' }),
   ).toBeInTheDocument()
-  expect(screen.getByAltText('候选效果放大预览')).toHaveAttribute(
+  expect(screen.getByAltText('对照候选效果')).toHaveAttribute(
     'src',
     '/api/v1/nmm/assets/c2',
   )

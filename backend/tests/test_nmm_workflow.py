@@ -53,6 +53,7 @@ def test_full_flow_real_postgres_pause_and_recreated_service_resume(tmp_path):
             request_id='select',
             revision=1,
             action='select',
+            quality_acknowledged=True,
             candidate_id=candidate['id'],
         )
         assert (await wait_job(second.jobs, job))['status'] == 'completed'
@@ -134,6 +135,7 @@ def test_idempotency_regeneration_version_and_total_generation_limit(tmp_path):
                 request_id='old',
                 revision=2,
                 action='select',
+                quality_acknowledged=True,
                 candidate_id=old['candidate_ids'][0],
             )
         with pytest.raises(ServiceError):
@@ -223,6 +225,7 @@ def test_selected_review_stop_resumes_same_real_checkpoint_without_new_generatio
             request_id='select',
             revision=1,
             action='select',
+            quality_acknowledged=True,
             candidate_id=paused['candidate_ids'][0],
         )
         await asyncio.wait_for(vision.started.wait(), 10)
@@ -236,7 +239,11 @@ def test_selected_review_stop_resumes_same_real_checkpoint_without_new_generatio
             image_edit=RecordingImageEdit(),
         )
         job = await second.run(
-            project['id'], request_id='resume', revision=1, confirm_generation=False
+            project['id'],
+            request_id='resume',
+            revision=1,
+            confirm_generation=False,
+            quality_acknowledged=True,
         )
         await wait_job(second.jobs, job)
         completed = second.detail(project['id'])
@@ -272,6 +279,7 @@ def test_bad_plan_retries_three_times_then_color_only_fallback_and_reference_iso
             request_id='select',
             revision=1,
             action='select',
+            quality_acknowledged=True,
             candidate_id=paused['candidate_ids'][0],
         )
         await wait_job(item.jobs, selected)
@@ -282,7 +290,7 @@ def test_bad_plan_retries_three_times_then_color_only_fallback_and_reference_iso
             for step in done['steps']
         )
         assert [task for task, _ in vision.calls].count('plan') == 3
-        assert vision.calls[0] == ('analysis', 2) and image.calls == [2]
+        assert vision.calls[0] == ('analysis', 3) and image.calls == [2]
         assert any('三次' in warning for warning in done['warnings'])
 
     asyncio.run(exercise())
@@ -296,7 +304,12 @@ def test_successful_plan_keeps_full_teaching_contract(tmp_path):
         await wait_job(item.jobs, first)
         candidate = item.detail(project['id'])['candidate_ids'][0]
         selected = await item.confirm(
-            project['id'], request_id='select', revision=1, action='select', candidate_id=candidate
+            project['id'],
+            request_id='select',
+            revision=1,
+            action='select',
+            quality_acknowledged=True,
+            candidate_id=candidate,
         )
         await wait_job(item.jobs, selected)
         done = item.detail(project['id'])
@@ -348,6 +361,7 @@ def test_revision_submit_failure_cannot_leave_old_checkpoint_resumable(tmp_path,
                 request_id='select',
                 revision=2,
                 action='select',
+                quality_acknowledged=True,
                 candidate_id=detail['input_snapshots']['1']['assets'][0]['id'],
             )
         monkeypatch.setattr(item.jobs, 'submit', original_submit)
@@ -387,6 +401,7 @@ def test_algorithm_area_overrides_model_area_and_review_receives_plan(tmp_path):
             request_id='select',
             revision=1,
             action='select',
+            quality_acknowledged=True,
             candidate_id=item.detail(project['id'])['candidate_ids'][0],
         )
         await wait_job(item.jobs, selected)
