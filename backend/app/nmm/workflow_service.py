@@ -13,6 +13,10 @@ from app.ingestion import digest
 from app.job_models import Job
 from app.models import now
 from app.services.errors import ServiceError
+from .billing import NmmBilling
+from .provider_types import NmmProviderError
+from .prompts import PROMPT_VERSION
+from .workflow_schemas import AnalysisOutput, PlanOutput, ReviewOutput
 from .checkpoints import PostgresCheckpointStore, delete_project_checkpoints
 from .models import NmmAsset, NmmPlan, NmmProject, NmmStep
 from .providers import UnconfiguredImageEditProvider, UnconfiguredVisionProvider
@@ -64,22 +68,50 @@ class NmmWorkflowService:
         )
         self.max_generations = max_generations
         self.lock = asyncio.Lock()
+        providers = [self.vision, self.image_edit]
+        configuration = {
+            'configuration_id': digest(
+                [
+                    PROMPT_VERSION,
+                    [
+                        schema.model_json_schema()
+                        for schema in (AnalysisOutput, PlanOutput, ReviewOutput)
+                    ],
+                    [
+                        getattr(provider, 'configuration_id', type(provider).__name__)
+                        for provider in providers
+                    ],
+                ]
+            ),
+            'providers': [
+                getattr(provider, 'public_config', {'provider': 'offline_test'})
+                for provider in providers
+            ],
+        }
+        self.billing = NmmBilling(engine, configuration)
 
     @property
     def provider_mode(self):
-        return (
-            'unconfigured'
-            if isinstance(self.vision, UnconfiguredVisionProvider)
-            or isinstance(self.image_edit, UnconfiguredImageEditProvider)
-            else 'offline_test'
-        )
+        if isinstance(self.vision, UnconfiguredVisionProvider) or isinstance(
+            self.image_edit, UnconfiguredImageEditProvider
+        ):
+            return 'unconfigured'
+        if any(
+            getattr(provider, 'mode', None) == 'live' for provider in (self.vision, self.image_edit)
+        ):
+            return 'live'
+        return 'offline_test'
 
-    def _project(self, db, project_id):
+    def _project(self, db, project_id, *, lock=False):
         try:
             identity = UUID(str(project_id))
         except (ValueError, TypeError):
             raise ServiceError(422, 'NMM 项目编号无效。') from None
-        project = db.get(NmmProject, identity)
+        project = (
+            db.scalar(select(NmmProject).where(NmmProject.id == identity).with_for_update())
+            if lock
+            else db.get(NmmProject, identity)
+        )
         if project is None:
             raise ServiceError(404, 'NMM 项目不存在。')
         return project
@@ -90,14 +122,19 @@ class NmmWorkflowService:
     def list_projects(self):
         with Session(self.engine) as db:
             return [
-                dict(encode(row), provider_mode=self.provider_mode)
+                dict(
+                    encode(row, exclude=('meta',)),
+                    meta=self.billing.public_meta(row),
+                    provider_mode=self.provider_mode,
+                )
                 for row in db.scalars(select(NmmProject).order_by(NmmProject.created_at.desc()))
             ]
 
     def detail(self, project_id):
         with Session(self.engine) as db:
             project = self._project(db, project_id)
-            result = encode(project)
+            result = encode(project, exclude=('meta',))
+            result['meta'] = self.billing.public_meta(project)
             result['provider_mode'] = self.provider_mode
             assets = list(
                 db.scalars(
@@ -126,9 +163,9 @@ class NmmWorkflowService:
             )
             return result
 
-    def estimate(self, project_id):
+    def estimate(self, project_id, *, params=None):
         project = self.detail(project_id)
-        return {
+        result = {
             'revision': project['revision'],
             'generation_count': project['generation_count'],
             'generation_limit': self.max_generations,
@@ -138,11 +175,15 @@ class NmmWorkflowService:
             'provider_mode': self.provider_mode,
             'estimated_cost': 0 if self.provider_mode == 'offline_test' else None,
         }
+        if self.provider_mode == 'live':
+            result.update(self.billing.estimate(project_id, params=params))
+        return result
 
     def read_asset(self, asset_id):
         return self.inputs.read_asset(UUID(str(asset_id)))
 
     def recover(self):
+        self.billing.recover()
         with Session(self.engine) as db, db.begin():
             for project in db.scalars(select(NmmProject).where(NmmProject.status.in_(ACTIVE))):
                 project.status, project.active_job_id = 'stopped', None
@@ -151,7 +192,16 @@ class NmmWorkflowService:
 
     def _require_providers(self):
         if self.provider_mode == 'unconfigured':
-            raise ServiceError(503, 'NMM 模型能力未配置；本阶段不提供真实模型接入。')
+            messages = [
+                getattr(provider, 'safe_message', '') for provider in (self.vision, self.image_edit)
+            ]
+            raise ServiceError(
+                503,
+                next(
+                    (message for message in messages if message),
+                    'NMM 模型能力未配置，请设置独立的视觉和图像编辑配置。',
+                ),
+            )
 
     def _request(self, project_id, request_id, parameters):
         if not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 128:
@@ -176,10 +226,13 @@ class NmmWorkflowService:
         if project.generation_count >= self.max_generations:
             raise ServiceError(409, '项目生成次数已达上限。')
 
-    async def run(self, project_id, *, request_id, revision, confirm_generation):
+    async def run(
+        self, project_id, *, request_id, revision, confirm_generation, cost_authorization=None
+    ):
         async with self.lock:
             parameters = {
                 'operation': 'run',
+                'cost_authorization': cost_authorization,
                 'project_id': str(project_id),
                 'revision': revision,
                 'confirm_generation': confirm_generation,
@@ -209,7 +262,15 @@ class NmmWorkflowService:
                     bool(generations)
                     and max(generations, key=lambda item: item[0])[1]['status'] == 'completed'
                 )
-                if resume_selected or (generated and project.workflow_thread_id):
+                # Analysis may be billed and cached before the business write
+                # or graph checkpoint succeeds. Keep that thread to replay its
+                # cached result, while never resuming an unknown generation.
+                analyzed = not generations and self.billing.has_completed_vision(
+                    project, 'analyze:0'
+                )
+                if analyzed and not resume_selected:
+                    self._generation_allowed(project, confirm_generation)
+                if resume_selected or ((generated or analyzed) and project.workflow_thread_id):
                     self._require_providers()
                     thread = project.workflow_thread_id
                     initial = None
@@ -223,6 +284,10 @@ class NmmWorkflowService:
                         'attempt': 0,
                         'warnings': [],
                     }
+            if self.provider_mode == 'live':
+                if cost_authorization is not None:
+                    self.billing.authorize(project_id, cost_authorization)
+                self.billing.check_access(project_id, thread)
             return await self._submit(
                 project_id, revision, key, parameters, thread, initial, selected=resume_selected
             )
@@ -237,11 +302,13 @@ class NmmWorkflowService:
         candidate_id=None,
         params=None,
         confirm_generation=False,
+        cost_authorization=None,
     ):
         async with self.lock:
             parsed = NmmParams.model_validate(params).model_dump() if params is not None else None
             parameters = {
                 'operation': 'confirm',
+                'cost_authorization': cost_authorization,
                 'project_id': str(project_id),
                 'revision': revision,
                 'action': action,
@@ -280,6 +347,13 @@ class NmmWorkflowService:
                 else:
                     raise ServiceError(422, '未知确认操作。')
                 changed = parsed is not None and parsed != project.params
+            if self.provider_mode == 'live':
+                if changed and cost_authorization is None:
+                    raise ServiceError(409, '修改参数前请先估算新参数并批准调用额度。')
+                if cost_authorization is not None:
+                    self.billing.authorize(
+                        project_id, cost_authorization, params=parsed if changed else None
+                    )
             if changed:
                 revision = self._new_revision(project_id, parsed)
                 thread = f'nmm:{project_id}:{revision}:{uuid4()}'
@@ -292,6 +366,8 @@ class NmmWorkflowService:
                 }
             else:
                 initial = Command(resume={'action': action, 'candidate_id': selected})
+            if self.provider_mode == 'live':
+                self.billing.check_access(project_id, thread)
             return await self._submit(
                 project_id, revision, key, parameters, thread, initial, selected=selected
             )
@@ -363,9 +439,10 @@ class NmmWorkflowService:
         holder['id'] = job['id']
         try:
             with Session(self.engine) as db, db.begin():
-                project = self._project(db, project_id)
+                project = self._project(db, project_id, lock=True)
                 project.workflow_thread_id, project.active_job_id = thread, job['id']
                 project.status, project.error = ('planning' if selected else 'generating'), None
+                project.meta = {**project.meta, 'error_info': None}
                 project.selected_candidate_id = UUID(selected) if selected else None
                 project.execution = (
                     project.execution
@@ -426,6 +503,29 @@ class NmmWorkflowService:
                 project_id, revision, context.id, 'stopped', '任务已停止，已完成的数据保留。'
             )
             raise
+        except (NmmProviderError, ServiceError) as error:
+            message = str(error) if isinstance(error, NmmProviderError) else error.detail
+            with Session(self.engine) as db, db.begin():
+                project = db.scalar(
+                    select(NmmProject)
+                    .where(NmmProject.id == UUID(str(project_id)))
+                    .with_for_update()
+                )
+                if project and project.active_job_id == context.id:
+                    project.meta = {
+                        **project.meta,
+                        'error_info': {
+                            'code': error.code
+                            if isinstance(error, NmmProviderError)
+                            else 'authorization',
+                            'message': message,
+                            'retryable': error.retryable
+                            if isinstance(error, NmmProviderError)
+                            else True,
+                        },
+                    }
+            self._terminal(project_id, revision, context.id, 'failed', message)
+            return {'status': 'failed', 'project_id': str(project_id)}
         except Exception:
             self._terminal(
                 project_id,

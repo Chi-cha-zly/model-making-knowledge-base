@@ -5,9 +5,29 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class Surface(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: str = Field(max_length=300)
+    shape: Literal['flat', 'convex', 'concave', 'cylindrical', 'edge', 'mixed']
+    position: str = Field(max_length=2000)
+    notes: str = Field(max_length=2000)
+
+
+class LightAssessment(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    direction: str = Field(max_length=80)
+    basis: str = Field(max_length=2000)
+    conflict: bool
+
+
 class AnalysisOutput(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    summary: str = Field(max_length=8000)
+    surfaces: list[Surface] = Field(max_length=30)
+    suggested_light_direction: LightAssessment
+    reflection_hints: list[str] = Field(max_length=30)
+    uncertain: list[str] = Field(max_length=30)
+    mask_issues: list[str] = Field(max_length=30)
+    summary: str = Field(default='', max_length=8000)
     warnings: list[str] = Field(default_factory=list, max_length=30)
 
 

@@ -38,7 +38,19 @@ class OfflineVision:
         if self.fail:
             raise RuntimeError('secret-provider-error-do-not-expose')
         if request['task'] == 'analysis':
-            value = {'summary': 'offline miniature analysis', 'warnings': []}
+            value = {
+                'summary': 'offline miniature analysis',
+                'warnings': [],
+                'surfaces': [],
+                'suggested_light_direction': {
+                    'direction': 'top_left',
+                    'basis': 'offline',
+                    'conflict': False,
+                },
+                'reflection_hints': [],
+                'uncertain': [],
+                'mask_issues': [],
+            }
         elif request['task'] == 'plan':
             if self.bad_plans:
                 self.bad_plans -= 1
@@ -46,7 +58,7 @@ class OfflineVision:
             value = {
                 'steps': [
                     dict(
-                        step,
+                        {k: v for k, v in step.items() if k != 'kind'},
                         title=f'Paint {step["index"]}',
                         color_description='Shown offline color',
                         areas='Shown operation region',

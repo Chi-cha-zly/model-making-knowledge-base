@@ -7,13 +7,15 @@ from io import BytesIO
 from uuid import UUID
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import now
 from app.services.errors import ServiceError
+from .calls import invoke
+from .provider_types import NmmProviderError
 from .models import NmmAsset
 from .prompts import analysis_prompt, generation_prompt, plan_prompt, review_prompt
 from .providers import ImageInput
@@ -144,7 +146,8 @@ class WorkflowOperations:
             if name == 'generate':
                 if project.generation_count >= self.service.max_generations:
                     raise ServiceError(409, '项目生成次数已达上限。')
-                project.generation_count += 1
+                if getattr(self.service.image_edit, 'mode', None) != 'live':
+                    project.generation_count += 1
                 project.execution = {
                     **project.execution,
                     'stages': {**project.execution.get('stages', {}), key: {'status': 'started'}},
@@ -152,27 +155,38 @@ class WorkflowOperations:
         inputs = self.inputs()
         prior_warnings = list(state.get('warnings', []))
         if name == 'analyze':
-            images = (
-                inputs['original']
-                + inputs['mask']
-                + inputs.get('reference_style', [])
-                + inputs.get('reference_palette', [])
-            )
-            analysis = await self.service.vision.analyze(
-                images, analysis_prompt(state['params']), AnalysisOutput
+            with (
+                Image.open(BytesIO(inputs['original'][0].data)) as original,
+                Image.open(BytesIO(inputs['mask'][0].data)) as mask,
+            ):
+                alpha = mask.convert('L').point(lambda value: 96 if value else 0)
+                overlay = Image.new('RGB', original.size, 'red')
+                annotated = png(Image.composite(overlay, original.convert('RGB'), alpha))
+            images = inputs['original'] + [ImageInput(annotated.data, annotated.content_type)]
+            analysis = await invoke(
+                self, 'vision', key, images, analysis_prompt(state['params']), schema=AnalysisOutput
             )
             analysis = AnalysisOutput.model_validate(analysis).model_dump()
             return self.write(
-                key, {'analysis': analysis, 'warnings': prior_warnings + analysis['warnings']}
+                key,
+                {
+                    'analysis': analysis,
+                    'warnings': prior_warnings
+                    + analysis['warnings']
+                    + analysis['uncertain']
+                    + analysis['mask_issues'],
+                },
             )
         if name == 'generate':
             references = inputs.get('reference_style', []) + inputs.get('reference_palette', [])
-            outputs = await self.service.image_edit.edit(
-                inputs['original'][0],
-                inputs['mask'][0],
-                references,
+            outputs = await invoke(
+                self,
+                'image',
+                key,
+                inputs['original'],
                 generation_prompt(state['params'], state['analysis']),
-                1,
+                mask=inputs['mask'][0],
+                references=references,
             )
             if not isinstance(outputs, list) or not 1 <= len(outputs) <= 4:
                 raise ValueError('Invalid candidate output count')
@@ -212,6 +226,7 @@ class WorkflowOperations:
             metadata = [
                 {
                     'index': index + 1,
+                    'kind': step.kind,
                     'color_hex': result.palette[step.palette_index].hex
                     if step.palette_index is not None
                     else None,
@@ -229,13 +244,29 @@ class WorkflowOperations:
             )
         if name == 'plan':
             colors = {color['hex'] for color in state['palette']}
-            images = inputs['original'] + [self.selected(state)]
-            for _ in range(3):
+            swatches = Image.new('RGB', (600, max(1, len(state['palette'])) * 60), 'white')
+            draw = ImageDraw.Draw(swatches)
+            for index, color in enumerate(state['palette']):
+                draw.rectangle((0, index * 60, 299, index * 60 + 59), fill=color['hex'])
+                draw.text(
+                    (315, index * 60 + 20),
+                    f'{color["hex"]}  {color["area_ratio"]:.1%}',
+                    fill='black',
+                )
+            palette_image = png(swatches)
+            images = inputs['original'] + [
+                self.selected(state),
+                ImageInput(palette_image.data, 'image/png'),
+            ]
+            for retry in range(3):
                 try:
-                    plan = await self.service.vision.analyze(
+                    plan = await invoke(
+                        self,
+                        'vision',
+                        f'{key}:{retry}',
                         images,
                         plan_prompt(state['params'], state['palette'], state['metadata']),
-                        PlanOutput,
+                        schema=PlanOutput,
                     )
                     plan = PlanOutput.model_validate(plan)
                     if len(plan.steps) != len(state['metadata']):
@@ -260,9 +291,18 @@ class WorkflowOperations:
                     for instruction, expected in zip(value['steps'], state['metadata']):
                         instruction['area_ratio'] = expected['area_ratio']
                     return self.write(key, {'plan': value})
+                except NmmProviderError as error:
+                    if error.code != 'invalid_output':
+                        raise
                 except (ValidationError, ValueError):
                     continue
-            fallback = {'steps': deepcopy(state['metadata']), 'overall_tips': [], 'fallback': True}
+            fallback = {
+                'steps': [
+                    {k: v for k, v in item.items() if k != 'kind'} for item in state['metadata']
+                ],
+                'overall_tips': [],
+                'fallback': True,
+            }
             return self.write(
                 key,
                 {
@@ -341,10 +381,13 @@ class WorkflowOperations:
                 )
                 images = [ImageInput(*self.service.inputs.read_asset(asset.id)) for asset in assets]
             try:
-                review = await self.service.vision.analyze(
+                review = await invoke(
+                    self,
+                    'vision',
+                    key,
                     images + [self.selected(state)],
                     review_prompt(state['params'], state['plan']),
-                    ReviewOutput,
+                    schema=ReviewOutput,
                 )
                 review = ReviewOutput.model_validate(review)
                 if any(issue.step > len(state['metadata']) for issue in review.issues):
@@ -353,6 +396,10 @@ class WorkflowOperations:
                     f'步骤 {issue.step} [{issue.severity}/{issue.type}] {issue.detail}'
                     for issue in review.issues
                 ]
+            except NmmProviderError as error:
+                if error.code != 'invalid_output':
+                    raise
+                warnings = ['质量自检输出不合规；请人工检查步骤。']
             except (ValidationError, ValueError):
                 warnings = ['质量自检输出不合规；请人工检查步骤。']
             return self.write(key, {'warnings': prior_warnings + warnings})

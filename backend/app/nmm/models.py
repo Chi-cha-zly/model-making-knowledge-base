@@ -52,6 +52,7 @@ class NmmProject(Base):
     )
     generation_count: Mapped[int] = mapped_column(Integer, default=0)
     execution: Mapped[dict] = mapped_column(JSON, default=dict)
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
     warnings: Mapped[list] = mapped_column(JSON, default=list)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

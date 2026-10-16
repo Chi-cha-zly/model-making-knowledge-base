@@ -466,3 +466,110 @@ def test_openapi_documents_multipart_and_workflow_request_fields(client):
     assert 'candidate_id' in confirm_schema['properties']
     assert 'step_count' in json.dumps(confirm_schema['properties']['params'])
     assert '$ref' not in json.dumps(confirm_schema) and '$defs' not in confirm_schema
+
+
+def test_proposed_estimate_and_authorization_are_documented_and_strict(client):
+    item = project(client)
+    path = f'{BASE}/{item["id"]}/estimate'
+    response = client.post(path, json={'params': {'metal': 'gold'}})
+    assert response.status_code == 200, response.text
+    assert client.get(f'{BASE}/{item["id"]}').json()['params']['metal'] == 'silver'
+    assert client.post(path, json={'params': {'step_count': '7'}}).status_code == 422
+    assert client.post(path, json={'unknown': 1}).status_code == 422
+    assert client.post(path, json={}, headers={'sec-fetch-site': 'cross-site'}).status_code == 403
+    paths = client.get('/openapi.json').json()['paths']
+    for action in ('run', 'confirm'):
+        schema = paths[BASE + '/{project_id}/' + action]['post']['requestBody']['content'][
+            'application/json'
+        ]['schema']
+        assert 'cost_authorization' in schema['properties']
+        assert 'max_image_calls' in json.dumps(schema['properties']['cost_authorization'])
+        assert '$ref' not in json.dumps(schema)
+
+
+def test_live_api_refuses_unapproved_and_malformed_authorization(tmp_path):
+    import httpx
+    from app.nmm.provider_config import build_nmm_providers
+
+    allowed, requests = [False], []
+
+    def forbidden(request):
+        assert allowed[0], 'Unapproved API invocation reached a provider'
+        requests.append(request)
+        return httpx.Response(
+            429,
+            json={
+                'error': {
+                    'code': 'rate_limit_exceeded',
+                    'message': 'synthetic-secret-provider-error',
+                }
+            },
+        )
+
+    vision, image = build_nmm_providers(
+        {
+            'VISION_BASE_URL': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+            'VISION_MODEL': 'qwen3-vl-plus',
+            'VISION_API_KEY': 'synthetic-vision',
+            'IMAGE_BASE_URL': 'https://api.openai.com/v1',
+            'IMAGE_MODEL': 'gpt-image-2.5-sunburst',
+            'IMAGE_API_KEY': 'synthetic-image',
+        },
+        transport=httpx.MockTransport(forbidden),
+    )
+    app = create_app(
+        test_database_url(),
+        tmp_path / 'attachments',
+        nmm_vision_provider=vision,
+        nmm_image_provider=image,
+    )
+    with TestClient(app) as client:
+        item = project(client)
+        data = {'request_id': 'no-approval', 'revision': 1, 'confirm_generation': True}
+        response = client.post(f'{BASE}/{item["id"]}/run', json=data)
+        assert response.status_code == 409
+        quote = client.get(f'{BASE}/{item["id"]}/estimate').json()
+        assert quote['requires_authorization'] is True and quote['estimate_id']
+        approval = {
+            'estimate_id': quote['estimate_id'],
+            'max_image_calls': 1,
+            'max_vision_calls': 1,
+            'accept_unknown_cost': True,
+        }
+        for patch in (
+            {'max_image_calls': True},
+            {'max_vision_calls': '1'},
+            {'accept_unknown_cost': 'true'},
+            {'unexpected': 1},
+        ):
+            response = client.post(
+                f'{BASE}/{item["id"]}/run',
+                json=data
+                | {
+                    'cost_authorization': approval | patch,
+                },
+            )
+            assert response.status_code == 422
+        response = client.post(
+            f'{BASE}/{item["id"]}/run',
+            json=data
+            | {
+                'cost_authorization': approval | {'accept_unknown_cost': False},
+            },
+        )
+        assert response.status_code == 422
+        assert client.get(f'{BASE}/{item["id"]}').json()['meta']['usage']['calls'] == []
+        assert requests == []
+        allowed[0] = True
+        approved = data | {'request_id': 'approved', 'cost_authorization': approval}
+        first = client.post(f'{BASE}/{item["id"]}/run', json=approved)
+        assert first.status_code == 200, first.text
+        failed = wait_project(client, item['id'], 'failed')
+        assert failed['meta']['usage']['reserved_vision_calls'] == 1
+        assert failed['meta']['usage']['reserved_image_calls'] == 0
+        assert 'synthetic-secret-provider-error' not in json.dumps(failed)
+        assert (
+            client.post(f'{BASE}/{item["id"]}/run', json=approved).json()['id']
+            == first.json()['id']
+        )
+        assert len(requests) == 1

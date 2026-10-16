@@ -13,6 +13,7 @@ from .ingestion import IngestionService
 from ..llm import LangChainProvider
 from ..jobs import JobService
 from ..nmm.workflow_service import NmmWorkflowService
+from ..nmm.provider_config import build_nmm_providers
 from ..runtime_config import read_settings
 from ..repositories.settings import PrivateSettings
 from ..prompts import compose_prompt
@@ -137,12 +138,13 @@ def build_runtime(
         raise ValueError('Private settings must be outside attachment storage')
     user_settings = PrivateSettings(private_path, env, credentials=credential_store)
     jobs = JobService(engine)
+    configured_vision, configured_image = build_nmm_providers(source)
     nmm = NmmWorkflowService(
         engine,
         storage,
         jobs,
-        vision=nmm_vision_provider,
-        image_edit=nmm_image_provider,
+        vision=nmm_vision_provider if nmm_vision_provider is not None else configured_vision,
+        image_edit=nmm_image_provider if nmm_image_provider is not None else configured_image,
         checkpoint_store=nmm_checkpoint_store,
     )
     experiments = ExperimentService(engine, chat.provider, chat.lock, settings=env, jobs=jobs)

@@ -18,6 +18,7 @@ from pydantic import (
 )
 from starlette.datastructures import UploadFile
 
+from ..nmm.billing import CostAuthorization
 from ..nmm.providers import ImageInput
 from ..nmm.schemas import NmmParams
 from .evaluation import paid_origin
@@ -40,6 +41,7 @@ class RunInput(BaseModel):
     request_id: RequestId
     revision: StrictInt = Field(ge=1)
     confirm_generation: StrictBool
+    cost_authorization: CostAuthorization | None = None
 
 
 class ConfirmInput(BaseModel):
@@ -50,6 +52,12 @@ class ConfirmInput(BaseModel):
     candidate_id: UUID | None = None
     params: NmmParams | None = None
     confirm_generation: StrictBool = False
+    cost_authorization: CostAuthorization | None = None
+
+
+class EstimateInput(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    params: NmmParams | None = None
 
 
 class ProjectInput(BaseModel):
@@ -265,6 +273,14 @@ def project_detail(project_id: UUID, request: Request):
 @router.get('/projects/{project_id}/estimate')
 def project_estimate(project_id: UUID, request: Request):
     return request.app.state.nmm.estimate(project_id)
+
+
+@router.post('/projects/{project_id}/estimate', openapi_extra=json_request_docs(EstimateInput))
+async def proposed_estimate(project_id: UUID, request: Request):
+    paid_origin(request)
+    data = await json_body(request, EstimateInput)
+    async with request.app.state.chat.lock:
+        return request.app.state.nmm.estimate(project_id, params=data.model_dump()['params'])
 
 
 @router.post('/projects/{project_id}/run', openapi_extra=json_request_docs(RunInput))

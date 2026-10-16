@@ -279,7 +279,7 @@ def test_bad_plan_retries_three_times_then_color_only_fallback_and_reference_iso
             for step in done['steps']
         )
         assert [task for task, _ in vision.calls].count('plan') == 3
-        assert vision.calls[0] == ('analysis', 4) and image.calls == [2]
+        assert vision.calls[0] == ('analysis', 2) and image.calls == [2]
         assert any('三次' in warning for warning in done['warnings'])
 
     asyncio.run(exercise())
