@@ -1,4 +1,7 @@
 import asyncio
+from uuid import UUID
+from sqlalchemy.orm import Session
+from app.nmm.models import NmmProject
 
 import pytest
 from sqlalchemy import create_engine
@@ -418,6 +421,26 @@ def test_completed_generation_business_checkpoint_gap_reuses_candidates(tmp_path
         assert (await wait_job(item.jobs, first))['status'] == 'failed'
         persisted = item.detail(project['id'])
         assert persisted['candidate_ids'] and persisted['generation_count'] == 1
+        with Session(item.engine) as db, db.begin():
+            row = db.get(NmmProject, UUID(project['id']))
+            row.generation_count = 6
+            row.status = 'stopped'
+        assert item.estimate(project['id'])['generation_required'] is False
+        assert item.estimate(project['id'])['expected_image_calls'] == 0
+        from copy import deepcopy
+
+        with Session(item.engine) as db, db.begin():
+            row = db.get(NmmProject, UUID(project['id']))
+            completed_execution = deepcopy(row.execution)
+            unknown_execution = deepcopy(row.execution)
+            for key, value in unknown_execution['stages'].items():
+                if key.startswith('generate:'):
+                    value['status'] = 'unknown'
+            row.execution = unknown_execution
+        assert item.estimate(project['id'])['generation_required'] is True
+        assert item.estimate(project['id'])['expected_image_calls'] == 1
+        with Session(item.engine) as db, db.begin():
+            db.get(NmmProject, UUID(project['id'])).execution = completed_execution
         retry = await item.run(
             project['id'], request_id='recover', revision=1, confirm_generation=False
         )
@@ -426,6 +449,6 @@ def test_completed_generation_business_checkpoint_gap_reuses_candidates(tmp_path
         assert restored['status'] == 'awaiting_confirmation'
         assert restored['workflow_thread_id'] == persisted['workflow_thread_id']
         assert restored['candidate_ids'] == persisted['candidate_ids']
-        assert restored['generation_count'] == 1 and len(item.image_edit.calls) == 1
+        assert restored['generation_count'] == 6 and len(item.image_edit.calls) == 1
 
     asyncio.run(exercise())

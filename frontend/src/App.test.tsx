@@ -95,6 +95,7 @@ beforeEach(() => {
       if (url.endsWith('/sources')) return response([source, source2])
       if (url.endsWith('/techniques')) return response([technique])
       if (url.endsWith('/products')) return response([product])
+      if (url.endsWith('/nmm/projects')) return response([])
       return response({}, 404)
     }),
   )
@@ -105,6 +106,22 @@ afterEach(() => {
 })
 
 describe('workbench', () => {
+  it('opens NMM from navigation and keeps its route active', async () => {
+    render(<App />)
+    const entry = screen.getByRole('button', { name: 'NMM 涂装' })
+    await userEvent.click(entry)
+    await waitFor(() => expect(window.location.hash).toBe('#/nmm'))
+    expect(entry).toHaveClass('active')
+    expect(screen.getByLabelText('主导航')).toContainElement(entry)
+    await waitFor(() =>
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.some(([url]) => String(url) === '/api/v1/nmm/projects'),
+      ).toBe(true),
+    )
+  })
+
   it('opens the management deep link and follows hash history changes', async () => {
     window.history.replaceState(null, '', '/#manage')
     render(<App />)

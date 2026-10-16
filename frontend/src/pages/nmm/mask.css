@@ -1,0 +1,119 @@
+.nmm-mask-editor {
+  color: var(--text);
+  min-width: 0;
+}
+.nmm-mask-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+.nmm-mask-heading span,
+.nmm-mask-help,
+.nmm-mask-status {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.nmm-mask-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  background: var(--subtle);
+  border: 1px solid var(--line);
+  border-radius: 0.6rem 0.6rem 0 0;
+}
+.nmm-mask-toolbar button {
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 0.35rem;
+  min-height: 2.5rem;
+  padding: 0.4rem 0.75rem;
+  cursor: pointer;
+}
+.nmm-mask-toolbar button[aria-pressed='true'] {
+  border-color: var(--accent);
+  box-shadow: inset 0 -3px var(--accent);
+}
+.nmm-mask-toolbar button:disabled,
+.nmm-mask-upload input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.nmm-mask-toolbar label {
+  display: grid;
+  grid-template-columns: auto auto;
+  column-gap: 0.5rem;
+  margin-inline: 0.25rem;
+  font-size: 0.8rem;
+}
+.nmm-mask-toolbar input {
+  grid-column: 1 / -1;
+  width: 8rem;
+  accent-color: var(--accent);
+}
+.nmm-mask-toolbar output {
+  color: var(--muted);
+  text-align: right;
+}
+.nmm-mask-stage {
+  position: relative;
+  border: 1px solid var(--line);
+  border-top: 0;
+  background: var(--subtle);
+  line-height: 0;
+  overflow: hidden;
+}
+.nmm-mask-original {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.nmm-mask-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: crosshair;
+}
+.nmm-mask-overlay[aria-disabled='true'] {
+  cursor: not-allowed;
+}
+.nmm-mask-help {
+  line-height: 1.6;
+}
+.nmm-mask-upload {
+  display: grid;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+}
+.nmm-mask-upload input {
+  max-width: 100%;
+  color: var(--text);
+}
+.nmm-mask-upload input::file-selector-button {
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  padding: 0.55rem 0.75rem;
+  border-radius: 0.35rem;
+  margin-right: 0.5rem;
+  cursor: pointer;
+}
+.nmm-mask-error {
+  color: var(--danger);
+  font-size: 0.9rem;
+}
+@media (max-width: 600px) {
+  .nmm-mask-toolbar {
+    gap: 0.4rem;
+    padding: 0.5rem;
+  }
+  .nmm-mask-toolbar label {
+    margin-top: 0.3rem;
+  }
+}

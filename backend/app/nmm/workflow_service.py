@@ -119,15 +119,42 @@ class NmmWorkflowService:
     def create_project(self, **kwargs):
         return self.detail(self.inputs.create_project(**kwargs))
 
+    @staticmethod
+    def _thumbnail(assets):
+        priority = {'final': 0, 'candidate': 1, 'original': 2}
+        eligible = [asset for asset in assets if asset.role in priority]
+        if not eligible:
+            return None
+        best = min(
+            eligible, key=lambda asset: (priority[asset.role], -asset.created_at.timestamp())
+        )
+        return str(best.id)
+
     def list_projects(self):
         with Session(self.engine) as db:
+            projects = list(db.scalars(select(NmmProject).order_by(NmmProject.created_at.desc())))
+            assets = list(
+                db.scalars(
+                    select(NmmAsset)
+                    .join(
+                        NmmProject,
+                        (NmmAsset.project_id == NmmProject.id)
+                        & (NmmAsset.revision == NmmProject.revision),
+                    )
+                    .where(NmmAsset.role.in_(('final', 'candidate', 'original')))
+                )
+            )
+            by_project = {}
+            for asset in assets:
+                by_project.setdefault(asset.project_id, []).append(asset)
             return [
                 dict(
                     encode(row, exclude=('meta',)),
                     meta=self.billing.public_meta(row),
                     provider_mode=self.provider_mode,
+                    thumbnail_asset_id=self._thumbnail(by_project.get(row.id, [])),
                 )
-                for row in db.scalars(select(NmmProject).order_by(NmmProject.created_at.desc()))
+                for row in projects
             ]
 
     def detail(self, project_id):
@@ -143,6 +170,7 @@ class NmmWorkflowService:
                     .order_by(NmmAsset.sort_order, NmmAsset.created_at)
                 )
             )
+            result['thumbnail_asset_id'] = self._thumbnail(assets)
             result['assets'] = [encode(row, exclude=('storage_name',)) for row in assets]
             result['candidate_ids'] = [str(row.id) for row in assets if row.role == 'candidate']
             plan = db.scalar(
@@ -163,20 +191,49 @@ class NmmWorkflowService:
             )
             return result
 
+    def _recovery_state(self, project):
+        resume_selected = (
+            str(project.selected_candidate_id)
+            if project.selected_candidate_id and project.workflow_thread_id
+            else None
+        )
+        generations = [
+            (int(key.split(':')[1]), value)
+            for key, value in project.execution.get('stages', {}).items()
+            if key.startswith('generate:')
+        ]
+        generated = (
+            bool(generations)
+            and max(generations, key=lambda item: item[0])[1]['status'] == 'completed'
+        )
+        # Analysis may be billed and cached before the business write
+        # or graph checkpoint succeeds. Keep that thread to replay its
+        # cached result, while never resuming an unknown generation.
+        analyzed = not generations and self.billing.has_completed_vision(project, 'analyze:0')
+        return resume_selected, generated, analyzed
+
     def estimate(self, project_id, *, params=None):
         project = self.detail(project_id)
+        with Session(self.engine) as db:
+            row = self._project(db, project_id)
+            selected, generated, _ = self._recovery_state(row)
+            generation_required = not bool(selected or (generated and row.workflow_thread_id))
+            if params is not None and params != row.params:
+                generation_required = True
         result = {
+            'generation_required': generation_required,
             'revision': project['revision'],
             'generation_count': project['generation_count'],
             'generation_limit': self.max_generations,
             'remaining_generations': max(0, self.max_generations - project['generation_count']),
-            'expected_image_calls': 1,
+            'expected_image_calls': int(generation_required),
             'expected_vision_calls': 5,
             'provider_mode': self.provider_mode,
             'estimated_cost': 0 if self.provider_mode == 'offline_test' else None,
         }
         if self.provider_mode == 'live':
             result.update(self.billing.estimate(project_id, params=params))
+        result['expected_image_calls'] = int(generation_required)
         return result
 
     def read_asset(self, asset_id):
@@ -248,26 +305,7 @@ class NmmWorkflowService:
                     or project.active_job_id is not None
                 ):
                     raise ServiceError(409, '项目不能重复启动；等待确认的项目请提交确认。')
-                resume_selected = (
-                    str(project.selected_candidate_id)
-                    if project.selected_candidate_id and project.workflow_thread_id
-                    else None
-                )
-                generations = [
-                    (int(key.split(':')[1]), value)
-                    for key, value in project.execution.get('stages', {}).items()
-                    if key.startswith('generate:')
-                ]
-                generated = (
-                    bool(generations)
-                    and max(generations, key=lambda item: item[0])[1]['status'] == 'completed'
-                )
-                # Analysis may be billed and cached before the business write
-                # or graph checkpoint succeeds. Keep that thread to replay its
-                # cached result, while never resuming an unknown generation.
-                analyzed = not generations and self.billing.has_completed_vision(
-                    project, 'analyze:0'
-                )
+                resume_selected, generated, analyzed = self._recovery_state(project)
                 if analyzed and not resume_selected:
                     self._generation_allowed(project, confirm_generation)
                 if resume_selected or ((generated or analyzed) and project.workflow_thread_id):

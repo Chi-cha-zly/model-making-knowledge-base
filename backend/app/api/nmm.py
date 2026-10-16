@@ -17,6 +17,9 @@ from pydantic import (
     ValidationError,
 )
 from starlette.datastructures import UploadFile
+from starlette.background import BackgroundTask
+
+from ..nmm.export import build_results_archive
 
 from ..nmm.billing import CostAuthorization
 from ..nmm.providers import ImageInput
@@ -315,7 +318,7 @@ async def delete_project(project_id: UUID, request: Request):
 
 
 @router.get('/assets/{asset_id}')
-def read_asset(asset_id: UUID, request: Request):
+def read_asset(asset_id: UUID, request: Request, download: bool = False):
     raw, content_type = request.app.state.nmm.read_asset(asset_id)
     return Response(
         raw,
@@ -323,7 +326,51 @@ def read_asset(asset_id: UUID, request: Request):
         headers={
             'X-Content-Type-Options': 'nosniff',
             'Cache-Control': 'no-store',
+            **(
+                {
+                    'Content-Disposition': f'attachment; filename="nmm-asset-{asset_id}.{ {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}.get(content_type, "png") }"'
+                }
+                if download
+                else {}
+            ),
         },
+    )
+
+
+class _ArchiveResponse(StreamingResponse):
+    def __init__(self, archive, *args, **kwargs):
+        self.archive = archive
+        super().__init__(*args, **kwargs)
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self.archive.close()
+
+
+@router.get('/projects/{project_id}/export')
+def export_project(project_id: UUID, request: Request):
+    archive = build_results_archive(request.app.state.nmm, project_id)
+
+    def chunks():
+        try:
+            while data := archive.file.read(64 * 1024):
+                yield data
+        finally:
+            archive.close()
+
+    return _ArchiveResponse(
+        archive,
+        chunks(),
+        media_type='application/zip',
+        headers={
+            'Content-Disposition': 'attachment; filename="nmm-results.zip"',
+            'Content-Length': str(archive.size),
+            'Cache-Control': 'no-store',
+            'X-Content-Type-Options': 'nosniff',
+        },
+        background=BackgroundTask(archive.close),
     )
 
 

@@ -7,11 +7,12 @@ import {
   Layers3,
   Menu,
   MessageSquare,
+  Paintbrush,
   Search,
   Settings2,
   X,
 } from 'lucide-react'
-import { useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import {
   HashRouter,
   Route,
@@ -30,6 +31,8 @@ import { formatError, sourceIsPublished } from './pages/library/types'
 import { useLibrary } from './pages/library/useLibrary'
 import SettingsWorkbench from './pages/settings/SettingsPage'
 import TechniqueEditor from './TechniqueEditor'
+
+const NmmPage = lazy(() => import('./pages/nmm/NmmPage'))
 
 export default function App() {
   const [client] = useState(
@@ -58,13 +61,15 @@ function Workbench() {
   const navigate = useNavigate()
   const mode = location.pathname.startsWith('/settings')
     ? 'settings'
-    : location.pathname.startsWith('/evaluation')
-      ? 'evaluation'
-      : location.pathname.startsWith('/chat')
-        ? 'chat'
-        : location.pathname === '/manage'
-          ? 'manage'
-          : 'browse'
+    : location.pathname.startsWith('/nmm')
+      ? 'nmm'
+      : location.pathname.startsWith('/evaluation')
+        ? 'evaluation'
+        : location.pathname.startsWith('/chat')
+          ? 'chat'
+          : location.pathname === '/manage'
+            ? 'manage'
+            : 'browse'
   const setMode = (next: string) => {
     void navigate(next === 'browse' ? '/' : `/${next}`)
   }
@@ -119,6 +124,19 @@ function Workbench() {
           </div>
         </div>
         <nav aria-label="主导航" className="main-nav">
+          <button
+            className={mode === 'nmm' ? 'active' : ''}
+            aria-current={mode === 'nmm' ? 'page' : undefined}
+            onClick={() => {
+              setMode('nmm')
+              setEditor(null)
+              setSelected(null)
+              setMobileMenu(false)
+            }}
+          >
+            <Paintbrush size={19} />
+            NMM 涂装
+          </button>
           <button
             className={mode === 'evaluation' ? 'active' : ''}
             onClick={() => {
@@ -201,16 +219,20 @@ function Workbench() {
             知识库 <ChevronRight size={14} />{' '}
             {mode === 'settings'
               ? '设置'
-              : mode === 'evaluation'
-                ? '检索测评'
-                : mode === 'chat'
-                  ? '对话助手'
-                  : mode === 'browse'
-                    ? '资料检索'
-                    : '资料管理'}
+              : mode === 'nmm'
+                ? 'NMM 涂装'
+                : mode === 'evaluation'
+                  ? '检索测评'
+                  : mode === 'chat'
+                    ? '对话助手'
+                    : mode === 'browse'
+                      ? '资料检索'
+                      : '资料管理'}
           </div>
           <div className="topbar-actions">
-            <CreationMenu onSelect={(type) => openEditor({ type })} />
+            {mode !== 'nmm' && (
+              <CreationMenu onSelect={(type) => openEditor({ type })} />
+            )}
           </div>
         </header>
         <main>
@@ -232,6 +254,14 @@ function Workbench() {
             </div>
           )}
           <Routes>
+            <Route
+              path="nmm/*"
+              element={
+                <Suspense fallback={<p role="status">正在打开涂装工作台…</p>}>
+                  <NmmPage />
+                </Suspense>
+              }
+            />
             <Route path="settings" element={<SettingsWorkbench />} />
             <Route
               path="evaluation/*"
