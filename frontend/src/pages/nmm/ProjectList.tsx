@@ -1,7 +1,12 @@
 import { useState } from 'react'
 import { Link } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { assetUrl, nmmApi, type NmmProjectSummary } from '../../nmmApi'
+import {
+  assetUrl,
+  nmmApi,
+  NmmApiError,
+  type NmmProjectSummary,
+} from '../../nmmApi'
 import NmmDialog from './NmmDialog'
 export const statusLabel = {
   draft: '待生成',
@@ -50,7 +55,19 @@ export default function ProjectList() {
         <p role="status">正在读取项目…</p>
       ) : query.isError ? (
         <div role="alert">
-          项目读取失败。
+          <p>
+            项目读取失败
+            {query.error instanceof NmmApiError && query.error.status > 0
+              ? `（HTTP ${query.error.status}）`
+              : ''}
+            ：{query.error.message}
+          </p>
+          {query.error instanceof NmmApiError && query.error.status === 404 && (
+            <p>
+              当前服务可能是旧版后端，或尚未启用 NMM
+              接口。请检查前端连接的后端版本与启动地址后重试。
+            </p>
+          )}
           <button onClick={() => void query.refetch()}>重新读取</button>
         </div>
       ) : query.data.length === 0 ? (

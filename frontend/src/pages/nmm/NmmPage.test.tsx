@@ -17,6 +17,8 @@ import {
   type NmmEstimate,
 } from '../../nmmApi'
 import NmmPage from './NmmPage'
+import { prepareOriginal } from './prepareOriginal'
+vi.mock('./prepareOriginal', () => ({ prepareOriginal: vi.fn() }))
 
 vi.mock('../../nmmApi', async (original) => ({
   ...(await original<typeof import('../../nmmApi')>()),
@@ -33,9 +35,16 @@ vi.mock('../../nmmApi', async (original) => ({
   },
 }))
 vi.mock('./MaskEditor', () => ({
-  default: ({ onChange }: { onChange: (mask: Blob) => void }) => (
+  default: ({
+    onChange,
+    file,
+  }: {
+    onChange: (mask: Blob) => void
+    file: File
+  }) => (
     <button
       type="button"
+      data-file-name={file.name}
       onClick={() => onChange(new Blob(['mask'], { type: 'image/png' }))}
     >
       绘制测试遮罩
@@ -131,6 +140,15 @@ function mount(path = '/nmm/p1') {
 }
 beforeEach(() => {
   vi.resetAllMocks()
+  vi.mocked(prepareOriginal).mockImplementation(async (file) => ({
+    file,
+    sourceName: file.name,
+    sourceWidth: 1600,
+    sourceHeight: 1200,
+    width: 1600,
+    height: 1200,
+    resized: false,
+  }))
   Events.instances = []
   vi.stubGlobal('EventSource', Events)
   vi.mocked(nmmApi.detail).mockResolvedValue(project())
@@ -469,8 +487,9 @@ it('blocks unsupported original files and excessive reference counts before savi
       ),
     },
   })
-  expect(await screen.findByRole('alert')).toHaveTextContent(
-    '参考图片最多 12 张',
+  expect(await screen.findByText('参考图片最多 12 张。')).toHaveAttribute(
+    'role',
+    'alert',
   )
   expect(nmmApi.create).not.toHaveBeenCalled()
 })
@@ -693,4 +712,109 @@ it('explains the positive-authorization limit if cached recovery has no vision a
   )
   expect(screen.getByRole('button', { name: '批准并继续' })).toBeDisabled()
   expect(nmmApi.run).not.toHaveBeenCalled()
+})
+
+it('shows the source and working sizes and saves the exact prepared file used by the mask editor', async () => {
+  const original = new File(['source'], 'large.jpg', { type: 'image/jpeg' })
+  const working = new File(['working'], 'large-work.png', { type: 'image/png' })
+  vi.mocked(prepareOriginal).mockResolvedValue({
+    file: working,
+    sourceName: original.name,
+    sourceWidth: 4000,
+    sourceHeight: 3000,
+    width: 2309,
+    height: 1732,
+    resized: true,
+  })
+  vi.mocked(nmmApi.create).mockResolvedValue(project())
+  mount('/nmm/new')
+  await userEvent.upload(screen.getByLabelText('原图'), original)
+  expect(await screen.findByText(/已选择：large.jpg/)).toBeInTheDocument()
+  expect(screen.getByText(/4000 × 3000.*2309 × 1732/)).toBeInTheDocument()
+  expect(screen.getByText(/仅在浏览器本地缩小/)).toBeInTheDocument()
+  const editor = screen.getByRole('button', { name: '绘制测试遮罩' })
+  expect(editor).toHaveAttribute('data-file-name', working.name)
+  await userEvent.type(screen.getByLabelText('项目名称'), '练习')
+  await userEvent.click(editor)
+  await userEvent.click(screen.getByRole('button', { name: '保存本地项目' }))
+  await waitFor(() =>
+    expect(nmmApi.create).toHaveBeenCalledWith(
+      expect.objectContaining({ original: working }),
+    ),
+  )
+  expect(nmmApi.run).not.toHaveBeenCalled()
+})
+it('clears the previous mask while preparing and ignores a late result after switching files', async () => {
+  let first!: (value: Awaited<ReturnType<typeof prepareOriginal>>) => void
+  let second!: (value: Awaited<ReturnType<typeof prepareOriginal>>) => void
+  vi.mocked(prepareOriginal)
+    .mockReturnValueOnce(
+      new Promise((done) => {
+        first = done
+      }),
+    )
+    .mockReturnValueOnce(
+      new Promise((done) => {
+        second = done
+      }),
+    )
+  mount('/nmm/new')
+  await userEvent.type(screen.getByLabelText('项目名称'), '练习')
+  await userEvent.upload(
+    screen.getByLabelText('原图'),
+    new File(['a'], 'a.png', { type: 'image/png' }),
+  )
+  expect(await screen.findByText(/正在本地处理原图/)).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: '保存本地项目' })).toBeDisabled()
+  await userEvent.upload(
+    screen.getByLabelText('原图'),
+    new File(['b'], 'b.png', { type: 'image/png' }),
+  )
+  expect(vi.mocked(prepareOriginal).mock.calls[0][1].aborted).toBe(true)
+  const b = new File(['b-work'], 'b-work.png', { type: 'image/png' })
+  second({
+    file: b,
+    sourceName: 'b.png',
+    sourceWidth: 4000,
+    sourceHeight: 3000,
+    width: 2309,
+    height: 1732,
+    resized: true,
+  })
+  const editor = await screen.findByRole('button', { name: '绘制测试遮罩' })
+  await userEvent.click(editor)
+  first({
+    file: new File(['a'], 'a.png', { type: 'image/png' }),
+    sourceName: 'a.png',
+    sourceWidth: 10,
+    sourceHeight: 10,
+    width: 10,
+    height: 10,
+    resized: false,
+  })
+  await waitFor(() =>
+    expect(editor).toHaveAttribute('data-file-name', 'b-work.png'),
+  )
+  expect(screen.getByText(/已选择：b.png/)).toBeInTheDocument()
+  expect(nmmApi.create).not.toHaveBeenCalled()
+})
+it('explains incomplete local preparation and aborts it when the page unmounts', async () => {
+  vi.mocked(prepareOriginal).mockReturnValue(new Promise(() => {}))
+  mount('/nmm/new')
+  expect(screen.getByText(/请先选择原图/)).toBeInTheDocument()
+  await userEvent.upload(
+    screen.getByLabelText('原图'),
+    new File(['a'], 'a.png', { type: 'image/png' }),
+  )
+  expect(screen.getByRole('button', { name: '保存本地项目' })).toBeDisabled()
+  cleanup()
+  expect(vi.mocked(prepareOriginal).mock.calls[0][1].aborted).toBe(true)
+})
+it('shows a missing NMM endpoint with HTTP status and older-backend guidance', async () => {
+  vi.mocked(nmmApi.list).mockRejectedValue(new NmmApiError(404, 'Not Found'))
+  mount('/nmm')
+  const alert = await screen.findByRole('alert')
+  expect(alert).toHaveTextContent('HTTP 404')
+  expect(alert).toHaveTextContent('Not Found')
+  expect(alert).toHaveTextContent(/旧版后端|尚未启用/)
 })

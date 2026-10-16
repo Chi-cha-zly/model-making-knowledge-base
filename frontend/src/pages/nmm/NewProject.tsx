@@ -4,6 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { nmmApi, type ReferenceRole } from '../../nmmApi'
 import MaskEditor from './MaskEditor'
 import ParamsForm, { defaultParams, validParams } from './ParamsForm'
+import { prepareOriginal, type PreparedOriginal } from './prepareOriginal'
 const allowed = ['image/png', 'image/jpeg', 'image/webp']
 const roles: [ReferenceRole, string][] = [
   ['reference_style', '效果参考'],
@@ -31,7 +32,11 @@ export default function NewProject() {
     [params, setParams] = useState(defaultParams),
     [original, setOriginal] = useState<File | null>(null),
     [mask, setMask] = useState<Blob | null>(null),
-    [identity, setIdentity] = useState(0)
+    [identity, setIdentity] = useState(0),
+    [prepared, setPrepared] = useState<PreparedOriginal | null>(null),
+    [selectedName, setSelectedName] = useState(''),
+    [preparing, setPreparing] = useState(false),
+    [originalError, setOriginalError] = useState('')
   const [references, setReferences] = useState<
       { file: File; role: ReferenceRole }[]
     >([]),
@@ -39,14 +44,56 @@ export default function NewProject() {
     [busy, setBusy] = useState(false),
     [checking, setChecking] = useState(false)
   const mounted = useRef(true),
-    refRequest = useRef(0)
+    refRequest = useRef(0),
+    originalRequest = useRef(0),
+    originalController = useRef<AbortController | null>(null)
   useEffect(() => {
     mounted.current = true
     return () => {
       mounted.current = false
       refRequest.current++
+      originalRequest.current++
+      originalController.current?.abort()
     }
   }, [])
+  async function selectOriginal(file: File) {
+    originalController.current?.abort()
+    const controller = new AbortController()
+    originalController.current = controller
+    const request = ++originalRequest.current
+    setOriginal(null)
+    setMask(null)
+    setPrepared(null)
+    setSelectedName(file.name)
+    setOriginalError('')
+    setError('')
+    setPreparing(true)
+    try {
+      validateFile(file)
+      const result = await prepareOriginal(file, controller.signal)
+      if (
+        !mounted.current ||
+        controller.signal.aborted ||
+        request !== originalRequest.current
+      )
+        return
+      setPrepared(result)
+      setOriginal(result.file)
+      setIdentity((i) => i + 1)
+    } catch (err) {
+      if (
+        mounted.current &&
+        !controller.signal.aborted &&
+        request === originalRequest.current
+      )
+        setOriginalError(
+          err instanceof Error ? err.message : '原图无法使用，请重新选择。',
+        )
+    } finally {
+      if (mounted.current && request === originalRequest.current)
+        setPreparing(false)
+    }
+  }
   async function addReferences(files: File[]) {
     const request = ++refRequest.current
     setChecking(true)
@@ -92,6 +139,7 @@ export default function NewProject() {
     if (
       busy ||
       checking ||
+      preparing ||
       !original ||
       !mask ||
       !title.trim() ||
@@ -137,22 +185,36 @@ export default function NewProject() {
               onChange={(e) => {
                 const file = e.target.files?.[0]
                 if (!file) return
-                try {
-                  validateFile(file)
-                  setMask(null)
-                  setOriginal(file)
-                  setIdentity((i) => i + 1)
-                  setError('')
-                } catch (err) {
-                  setError((err as Error).message)
-                }
+                void selectOriginal(file)
                 e.target.value = ''
               }}
             />
           </label>
           <p className="nmm-hint">
-            PNG / JPEG / WebP · 最大 400 万像素、20 MiB · 原图必须不透明
+            PNG / JPEG / WebP · 输入最大 2000 万像素、20 MiB · 必须不透明。超过
+            400 万像素会在本地等比缩小为工作图。
           </p>
+          {selectedName && <p className="nmm-hint">已选择：{selectedName}</p>}
+          {preparing && <p role="status">正在本地处理原图，请稍候…</p>}
+          {originalError && (
+            <p className="nmm-error" role="alert">
+              {originalError}
+            </p>
+          )}
+          {prepared && (
+            <div className="nmm-hint" role="status">
+              <p>
+                源图 {prepared.sourceWidth} × {prepared.sourceHeight} → 工作图{' '}
+                {prepared.width} × {prepared.height} 像素
+              </p>
+              <p>
+                {prepared.resized
+                  ? '仅在浏览器本地缩小，未修改源文件；保存时只上传工作图。'
+                  : '尺寸无需缩小，保留原文件作为工作图。'}{' '}
+                遮罩外保留的是工作图中的对应像素。
+              </p>
+            </div>
+          )}
           {original ? (
             <MaskEditor
               key={identity}
@@ -245,6 +307,7 @@ export default function NewProject() {
             disabled={
               busy ||
               checking ||
+              preparing ||
               !original ||
               !mask ||
               !title.trim() ||
@@ -253,6 +316,21 @@ export default function NewProject() {
           >
             {busy ? '正在保存…' : '保存本地项目'}
           </button>
+          <p className="nmm-hint" role="status">
+            {preparing
+              ? '请等待原图处理完成。'
+              : !original
+                ? '请先选择原图并完成本地读取。'
+                : !mask
+                  ? '请先绘制涂装区域，或上传同尺寸黑白遮罩。'
+                  : !title.trim()
+                    ? '请填写项目名称后保存。'
+                    : !validParams(params)
+                      ? '请检查涂装参数：步骤数需为 4–9，金属名称不能为空。'
+                      : checking
+                        ? '请等待参考图片检查完成。'
+                        : '工作图与遮罩已就绪，可以保存本地项目。'}
+          </p>
           <p className="nmm-hint">
             保存不会调用模型。下一步先查看估算，再决定是否授权。
           </p>
