@@ -14,6 +14,7 @@ from app.job_models import Job
 from app.models import now
 from app.services.errors import ServiceError
 from .billing import NmmBilling
+from .calls import error_record
 from .provider_types import NmmProviderError
 from .prompts import PROMPT_VERSION
 from .workflow_schemas import AnalysisOutput, PlanOutput, ReviewOutput
@@ -552,15 +553,9 @@ class NmmWorkflowService:
                 if project and project.active_job_id == context.id:
                     project.meta = {
                         **project.meta,
-                        'error_info': {
-                            'code': error.code
-                            if isinstance(error, NmmProviderError)
-                            else 'authorization',
-                            'message': message,
-                            'retryable': error.retryable
-                            if isinstance(error, NmmProviderError)
-                            else True,
-                        },
+                        'error_info': error_record(error)
+                        if isinstance(error, NmmProviderError)
+                        else {'code': 'authorization', 'message': message, 'retryable': True},
                     }
             self._terminal(project_id, revision, context.id, 'failed', message)
             return {'status': 'failed', 'project_id': str(project_id)}

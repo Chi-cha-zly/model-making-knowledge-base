@@ -539,3 +539,142 @@ def test_existing_large_reference_contract_is_preserved_then_downscaled(capabili
             )
         )
     assert result.usage.input_images == 2
+
+
+@pytest.mark.parametrize('capability,label', [('vision', '视觉'), ('image', '图像编辑')])
+@pytest.mark.parametrize('phase', ['connect', 'write', 'read', 'pool', 'overall', 'http_408'])
+def test_timeout_phase_is_safe_persistable_and_never_retried(capability, label, phase):
+    from app.nmm.calls import error_record
+
+    calls = []
+
+    async def handler(request):
+        calls.append(request)
+        if phase == 'http_408':
+            return httpx.Response(408, json={'error': {'message': 'private-secret'}})
+        if phase == 'overall':
+            await asyncio.sleep(1)
+        exception = {
+            'connect': httpx.ConnectTimeout,
+            'write': httpx.WriteTimeout,
+            'read': httpx.ReadTimeout,
+            'pool': httpx.PoolTimeout,
+        }[phase]
+        raise exception('private-secret', request=request)
+
+    vision, image = build_nmm_providers(settings(), transport=httpx.MockTransport(handler))
+    provider = vision if capability == 'vision' else image
+    if phase == 'overall':
+        provider.timeout_seconds = 0.01
+    with pytest.raises(NmmProviderError) as caught:
+        asyncio.run(provider.request('/test', 2, content=b'{}'))
+    error = caught.value
+    assert error.timeout_phase == phase
+    assert label in str(error) and 'private-secret' not in str(error)
+    assert error.code == 'timeout' and error.outcome_unknown and error.retryable
+    record = error_record(error)
+    assert record['timeout_phase'] == phase
+    assert record['request_bytes'] == 2
+    assert len(calls) == 1
+
+
+def test_legacy_provider_errors_keep_original_record_shape():
+    from app.nmm.calls import error_record
+
+    assert error_record(NmmProviderError('network', '安全错误')) == {
+        'code': 'network',
+        'message': '安全错误',
+        'retryable': False,
+    }
+
+
+def test_base_transport_timeout_stays_unspecified_and_cancellation_propagates():
+    async def exercise():
+        async def timeout(request):
+            raise httpx.TimeoutException('private-secret', request=request)
+
+        vision, _ = build_nmm_providers(settings(), transport=httpx.MockTransport(timeout))
+        with pytest.raises(NmmProviderError) as caught:
+            await vision.request('/test', 1)
+        assert caught.value.timeout_phase == 'transport'
+        assert caught.value.request_bytes is None
+        assert '阶段未知' in str(caught.value)
+
+        async def canceled(request):
+            raise asyncio.CancelledError()
+
+        vision, _ = build_nmm_providers(settings(), transport=httpx.MockTransport(canceled))
+        with pytest.raises(asyncio.CancelledError):
+            await vision.request('/test', 1)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    'values',
+    [
+        {'timeout_phase': 'private-secret'},
+        {'request_bytes': -1},
+        {'request_bytes': True},
+        {'request_bytes': 'private-secret'},
+    ],
+)
+def test_diagnostic_fields_reject_uncontrolled_values(values):
+    with pytest.raises(ValueError):
+        NmmProviderError('timeout', '安全错误', **values)
+
+
+def test_workflow_error_summary_keeps_safe_timeout_diagnostics(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from uuid import uuid4
+    from app.nmm import workflow_service
+
+    error = NmmProviderError(
+        'timeout',
+        'NMM 视觉请求超时：上传请求',
+        retryable=True,
+        outcome_unknown=True,
+        timeout_phase='write',
+        request_bytes=123,
+    )
+
+    async def invoke(*args, **kwargs):
+        raise error
+
+    @asynccontextmanager
+    async def open_store():
+        yield None
+
+    project = SimpleNamespace(active_job_id=7, meta={})
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.scalar.return_value = project
+    monkeypatch.setattr(workflow_service, 'Session', lambda *args: session)
+    monkeypatch.setattr(
+        workflow_service, 'build_workflow', lambda *args: SimpleNamespace(ainvoke=invoke)
+    )
+    service = object.__new__(workflow_service.NmmWorkflowService)
+    service.engine = object()
+    service.checkpoint_store = SimpleNamespace(open=open_store)
+    service._terminal = MagicMock()
+    result = asyncio.run(service._execute(uuid4(), 1, 'thread', {}, SimpleNamespace(id=7)))
+    assert result['status'] == 'failed'
+    assert project.meta['error_info']['timeout_phase'] == 'write'
+    assert project.meta['error_info']['request_bytes'] == 123
+
+
+def test_immediate_builtin_timeout_does_not_claim_overall_deadline():
+    calls = []
+
+    async def handler(request):
+        calls.append(request)
+        raise TimeoutError('private-secret')
+
+    vision, _ = build_nmm_providers(settings(), transport=httpx.MockTransport(handler))
+    with pytest.raises(NmmProviderError) as caught:
+        asyncio.run(vision.request('/test', 1, content=b'{}'))
+    assert caught.value.timeout_phase == 'transport'
+    assert '阶段未知' in str(caught.value)
+    assert caught.value.outcome_unknown and len(calls) == 1

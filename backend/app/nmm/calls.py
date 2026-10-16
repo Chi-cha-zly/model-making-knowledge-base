@@ -12,7 +12,12 @@ from .provider_types import CallUsage, NmmProviderError, ProviderResult
 
 
 def error_record(error):
-    return {'code': error.code, 'message': str(error), 'retryable': error.retryable}
+    result = {'code': error.code, 'message': str(error), 'retryable': error.retryable}
+    for name in ('timeout_phase', 'request_bytes'):
+        value = getattr(error, name, None)
+        if value is not None:
+            result[name] = value
+    return result
 
 
 async def invoke(operations, kind, key, images, prompt, *, schema=None, mask=None, references=()):

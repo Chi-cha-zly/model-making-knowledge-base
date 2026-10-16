@@ -628,3 +628,63 @@ def test_public_meta_never_exposes_cached_model_text_or_fingerprints():
         and 'payload-one' not in value
         and 'config-one' not in value
     )
+
+
+def test_timeout_diagnostics_survive_public_meta_with_unknown_spend(tmp_path):
+    import httpx
+    from app.jobs import JobService
+    from app.nmm.provider_config import build_nmm_providers
+    from app.nmm.workflow_service import NmmWorkflowService
+    from nmm_fakes import make_inputs, wait_job
+
+    calls = []
+
+    def timeout(request):
+        calls.append(request)
+        raise httpx.WriteTimeout('private-secret', request=request)
+
+    vision, image = build_nmm_providers(
+        {
+            'VISION_API_KEY': 'offline-test-only',
+            'VISION_MODEL': 'qwen3-vl-plus',
+            'VISION_BASE_URL': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+            'IMAGE_API_KEY': 'offline-test-only',
+            'IMAGE_MODEL': 'gpt-image-2.5-sunburst',
+            'IMAGE_BASE_URL': 'https://api.openai.com/v1',
+        },
+        transport=httpx.MockTransport(timeout),
+    )
+
+    async def exercise():
+        engine = create_engine(test_database_url())
+        service = NmmWorkflowService(
+            engine, tmp_path / 'attachments', JobService(engine), vision=vision, image_edit=image
+        )
+        project = service.create_project(title='timeout diagnostics', **make_inputs())
+        quote = service.estimate(project['id'])
+        job = await service.run(
+            project['id'],
+            request_id='timeout',
+            revision=1,
+            confirm_generation=True,
+            cost_authorization={
+                'estimate_id': quote['estimate_id'],
+                'max_image_calls': 1,
+                'max_vision_calls': 5,
+                'accept_unknown_cost': True,
+            },
+        )
+        assert (await wait_job(service.jobs, job))['status'] == 'failed'
+        meta = service.detail(project['id'])['meta']
+        call = meta['usage']['calls'][0]
+        assert call['status'] == 'unknown'
+        assert meta['authorization']['disabled'] is True
+        assert meta['usage']['reserved_vision_calls'] == 1
+        assert meta['usage']['reserved_image_calls'] == 0
+        for error in (meta['error_info'], call['error']):
+            assert error['timeout_phase'] == 'write'
+            assert error['request_bytes'] == len(calls[0].content)
+            assert '视觉' in error['message'] and 'private-secret' not in error['message']
+        assert len(calls) == 1
+
+    asyncio.run(exercise())

@@ -138,9 +138,33 @@ class _Provider:
             code, _MESSAGES[code], retryable=retryable, usage=usage, outcome_unknown=unknown
         )
 
+    def timeout_error(self, phase, usage, request_bytes):
+        capability = '视觉' if self.provider == 'dashscope' else '图像编辑'
+        label = {
+            'connect': '建立连接',
+            'write': '上传请求',
+            'read': '等待或读取响应',
+            'pool': '等待连接池',
+            'overall': '整个请求超过总时限',
+            'http_408': '服务端返回 HTTP 408',
+            'transport': '网络传输（阶段未知）',
+        }[phase]
+        return NmmProviderError(
+            'timeout',
+            f'NMM {capability}请求超时：{label}；结果未知，不会自动重试。',
+            retryable=True,
+            usage=usage,
+            outcome_unknown=True,
+            timeout_phase=phase,
+            request_bytes=request_bytes,
+        )
+
     async def request(self, path, input_images, *, content_type=None, **kwargs):
         start = monotonic()
         response_id = None
+        content = kwargs.get('content')
+        request_bytes = len(content) if isinstance(content, bytes) else None
+        deadline = None
 
         def usage(payload=None):
             return self.usage(
@@ -159,7 +183,7 @@ class _Provider:
                 follow_redirects=False,
                 trust_env=False,
             ) as client:
-                async with asyncio.timeout(self.timeout_seconds):
+                async with asyncio.timeout(self.timeout_seconds) as deadline:
                     async with client.stream(
                         'POST',
                         self.base_url + path,
@@ -204,7 +228,7 @@ class _Provider:
                             if response.status_code == 429:
                                 raise self.error('rate_limited', known, retryable=True)
                             if response.status_code == 408:
-                                raise self.error('timeout', known, retryable=True, unknown=True)
+                                raise self.timeout_error('http_408', known, request_bytes)
                             if 300 <= response.status_code < 400:
                                 raise self.error('configuration', known)
                             raise self.error(
@@ -216,8 +240,24 @@ class _Provider:
                         if not isinstance(payload, dict):
                             raise self.error('invalid_output', known)
                         return payload, known
-        except (httpx.TimeoutException, TimeoutError):
-            raise self.error('timeout', usage(), retryable=True, unknown=True) from None
+        except httpx.TimeoutException as error:
+            phase = next(
+                (
+                    name
+                    for kind, name in (
+                        (httpx.ConnectTimeout, 'connect'),
+                        (httpx.WriteTimeout, 'write'),
+                        (httpx.ReadTimeout, 'read'),
+                        (httpx.PoolTimeout, 'pool'),
+                    )
+                    if isinstance(error, kind)
+                ),
+                'transport',
+            )
+            raise self.timeout_error(phase, usage(), request_bytes) from None
+        except TimeoutError:
+            phase = 'overall' if deadline is not None and deadline.expired() else 'transport'
+            raise self.timeout_error(phase, usage(), request_bytes) from None
         except httpx.RequestError:
             raise self.error('network', usage(), retryable=True, unknown=True) from None
 
