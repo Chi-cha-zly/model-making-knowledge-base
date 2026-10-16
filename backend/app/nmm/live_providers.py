@@ -74,6 +74,7 @@ def _envelope(prompt):
 class _Provider:
     mode = 'live'
     timeout_seconds = 240
+    write_timeout_seconds = 30
     max_response_bytes = 1024 * 1024
 
     def __init__(self, *, base_url, model, api_key, transport=None, region=None):
@@ -179,7 +180,9 @@ class _Provider:
             )
             async with httpx.AsyncClient(
                 transport=transport,
-                timeout=httpx.Timeout(self.timeout_seconds, connect=15, write=30, pool=15),
+                timeout=httpx.Timeout(
+                    self.timeout_seconds, connect=15, write=self.write_timeout_seconds, pool=15
+                ),
                 follow_redirects=False,
                 trust_env=False,
             ) as client:
@@ -342,6 +345,7 @@ class OpenAIImageEditProvider(_Provider):
 
 class DashScopeVisionProvider(_Provider):
     provider = 'dashscope'
+    write_timeout_seconds = 120
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

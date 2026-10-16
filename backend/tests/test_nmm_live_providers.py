@@ -678,3 +678,18 @@ def test_immediate_builtin_timeout_does_not_claim_overall_deadline():
     assert caught.value.timeout_phase == 'transport'
     assert '阶段未知' in str(caught.value)
     assert caught.value.outcome_unknown and len(calls) == 1
+
+
+@pytest.mark.parametrize('capability,write_seconds', [('vision', 120), ('image', 30)])
+def test_capability_upload_budget_preserves_other_timeout_limits(capability, write_seconds):
+    captured = []
+
+    def handler(request):
+        captured.append(request.extensions['timeout'])
+        return httpx.Response(200, json={})
+
+    vision, image = build_nmm_providers(settings(), transport=httpx.MockTransport(handler))
+    provider = vision if capability == 'vision' else image
+    assert provider.timeout_seconds == 240
+    asyncio.run(provider.request('/test', 1, content=b'{}'))
+    assert captured == [{'connect': 15, 'write': write_seconds, 'read': 240, 'pool': 15}]
